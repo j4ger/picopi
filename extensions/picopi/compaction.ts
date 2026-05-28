@@ -12,7 +12,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getConfig, getProvider, resolveModel } from "./config";
+import { getConfig, resolveModel } from "./config";
+import { spawn } from "node:child_process";
 
 const SUMMARY_SYSTEM_PROMPT =
   `You are a context summarization assistant. Your task is to read a conversation ` +
@@ -92,72 +93,61 @@ async function summarizeWithModel(
   modelRef: string, systemPrompt: string, userPrompt: string, signal: AbortSignal
 ): Promise<string | null> {
   const resolver = resolveModel(modelRef);
+  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
+  // Try each fallback chain entry: spawn pi with --model provider/modelId
   for (const entry of resolver.chain) {
-    const { provider, modelId } = resolver.parse(entry);
-    const p = getProvider(provider);
-    if (!p || !p.key) continue;
-
+    const { provider } = resolver.parse(entry);
     try {
-      const result = await callProvider(p.baseUrl, p.key, modelId, p.api, systemPrompt, userPrompt, signal);
+      const result = await spawnSummary(entry, fullPrompt, signal);
       if (result) return result;
-    } catch { /* try next fallback */ }
+    } catch {
+      // provider-level failure — try next fallback
+      continue;
+    }
   }
 
   return null;
 }
 
-async function callProvider(
-  baseUrl: string, apiKey: string, modelId: string, api: string,
-  systemPrompt: string, userPrompt: string, signal: AbortSignal
-): Promise<string | null> {
-  const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-  const body: any = {
-    model: modelId,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    temperature: 0.3,
-    max_tokens: 8192,
-  };
-
-  if (api === "anthropic-messages") {
-    // Anthropic uses different endpoint and body format
-    const anthropicBody = {
-      model: modelId,
-      max_tokens: 8192,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-      temperature: 0.3,
-    };
-    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(anthropicBody),
-      signal,
+/** Spawn a lightweight pi process for summarization — no tools, no thinking. */
+function spawnSummary(modelRef: string, prompt: string, signal: AbortSignal): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn("pi", [
+      "--mode", "json", "-p", "--no-session",
+      "--no-tools", "--no-skills",
+      "--model", modelRef,
+      "--thinking", "off",
+    ], {
+      env: { ...process.env, PI_OFFLINE: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.content?.[0]?.text || null;
-  }
 
-  // Default: OpenAI-compatible
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal,
+    let stdout = "";
+    child.stdin.write(prompt);
+    child.stdin.end();
+    child.stdout.on("data", d => { stdout += d.toString(); });
+
+    const onAbort = () => { child.kill("SIGTERM"); resolve(null); };
+    signal.addEventListener("abort", onAbort);
+
+    child.on("close", code => {
+      signal.removeEventListener("abort", onAbort);
+      if (code !== 0) { resolve(null); return; }
+      // Extract final assistant text from JSONL
+      try {
+        let text = "";
+        for (const line of stdout.trim().split("\n")) {
+          const ev = JSON.parse(line);
+          if (ev.type === "message_end" && ev.message?.role === "assistant") {
+            for (const part of ev.message.content || []) {
+              if (part.type === "text") text += part.text;
+            }
+          }
+        }
+        resolve(text.trim() || null);
+      } catch { resolve(null); }
+    });
+    child.on("error", () => { signal.removeEventListener("abort", onAbort); resolve(null); });
   });
-
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || null;
 }

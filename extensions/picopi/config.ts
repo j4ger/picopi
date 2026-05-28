@@ -11,13 +11,11 @@ import { join } from "node:path";
 
 const CFG_PATH = join(homedir(), ".pi", "agent", "config.json");
 
-export interface Provider { baseUrl: string; api: string; key: string; }
 export interface AgentConfig { model: string; thinking?: string; timeout?: number; }
 export interface Config {
   orchestrator: { model: string; thinking?: string };
   agents: Record<string, AgentConfig>;
   fallbacks: Record<string, string[]>;
-  providers?: Record<string, Provider>;
 }
 
 let _config: Config | null = null;
@@ -99,10 +97,6 @@ function loadConfig(): Config {
 
 export function getConfig(): Config { return _config || loadConfig(); }
 export function reload(): void { _config = null; }
-
-export function getProvider(name: string): Provider | null {
-  return getConfig().providers?.[name] || null;
-}
 
 export function getAgent(name: string): AgentConfig | null {
   return getConfig().agents[name] || null;

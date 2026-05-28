@@ -4,7 +4,8 @@
  * Auto-delegates tasks to specialist subagents with streaming,
  * transparent provider fallback, auto-checkpoints, and a dashboard widget.
  *
- * All config (agents, providers, keys) lives in ~/.pi/agent/config.json
+ * Agents, fallback chains, and thinking levels live in ~/.pi/agent/config.json
+ * Providers, API keys, and model definitions live in ~/.pi/agent/models.json
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

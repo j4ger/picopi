@@ -17,7 +17,15 @@ git clone <repo> && cd picopi
 
 Use `--skip-config` when updating picopi to a new version — it skips copying `config.json` and `models.json` so your existing keys and fallback chains are preserved.
 
-After installation, **edit `~/.pi/agent/config.json`** to add your API keys and configure fallback chains. Then launch Pi:
+After installation, **edit `~/.pi/agent/config.json`** to add your API keys and configure fallback chains.
+
+> **⚠️ settings.json:** Ensure `~/.pi/agent/settings.json` has `defaultModel` + `defaultProvider` set to a model that actually exists in your `models.json`. Otherwise Pi may show a harmless-but-annoying "No models match pattern" warning. Example:
+>
+> ```json
+> { "defaultProvider": "insta", "defaultModel": "claude-sonnet-4-6" }
+> ```
+
+Then launch Pi:
 
 ```bash
 pi
@@ -56,8 +64,9 @@ Two config systems live side by side. Don't mix them up:
 
 | File | Who reads it | What to put there |
 |------|-------------|-------------------|
-| **`~/.pi/agent/config.json`** | **picopi** | Your providers, agents, API keys, fallback chains. **This is the one you edit most.** |
+| **`~/.pi/agent/config.json`** | **picopi** | Agent models, thinking levels, fallback chains. **This is the one you edit most.** |
 | **`~/.pi/agent/models.json`** | **Pi** | Model registry — tells Pi what models exist for the `/model` picker. picopi does NOT read this. |
+| **`~/.pi/agent/settings.json`** | **Pi** | Pi's runtime settings (default model, compaction, etc.). Set `defaultModel` + `defaultProvider` to match a model in `models.json` to avoid startup warnings. |
 | **`~/.pi/agent/AGENTS.md`** | **Pi** | Orchestrator system prompt — loaded automatically on every turn. |
 
 **NEVER commit or share `config.json`.** It contains your API keys.
@@ -86,14 +95,13 @@ This means: for `quick`, try DeepSeek's `deepseek-v4-flash` first, then SenseNov
 
 ### Quick rule
 
-- Adding a **new provider or API key** → edit `config.json`
-- Adding a **new model** so Pi knows about it → edit `models.json`
+- Adding a **new provider or API key** → edit `models.json`
 - Changing which model an agent uses → edit the fallback chain in `config.json`
 - Changing **agent behavior or prompts** → edit `agents/*.md`
 
 ### Setting up providers
 
-Edit `~/.pi/agent/config.json` and replace the placeholders:
+Edit `~/.pi/agent/config.json` to set your agent models and fallback chains:
 
 ```json
 {
@@ -111,23 +119,11 @@ Edit `~/.pi/agent/config.json` and replace the placeholders:
     "quick": ["deepseek/deepseek-v4-flash",           "sensenova/deepseek-v4-flash"],
     "pro":   ["deepseek/deepseek-v4-pro",             "sensenova/deepseek-v4-pro"],
     "lite":  ["sensenova/sensenova-6.7-flash-lite",   "deepseek/deepseek-v4-flash"]
-  },
-  "providers": {
-    "deepseek": {
-      "baseUrl": "https://api.deepseek.com",
-      "api": "openai-completions",
-      "key": "sk-..."
-    },
-    "sensenova": {
-      "baseUrl": "https://token.sensenova.cn/v1",
-      "api": "openai-completions",
-      "key": "sk-..."
-    }
   }
 }
 ```
 
-Also add model entries to `~/.pi/agent/models.json` so Pi knows about them:
+Also add provider entries to `~/.pi/agent/models.json` so Pi knows about them:
 
 ```json
 {
@@ -135,6 +131,7 @@ Also add model entries to `~/.pi/agent/models.json` so Pi knows about them:
     "deepseek": {
       "baseUrl": "https://api.deepseek.com",
       "api": "openai-completions",
+      "apiKey": "sk-...",
       "authHeader": true,
       "models": [
         { "id": "deepseek-v4-flash", "name": "ds-flash", "input": ["text"], "contextWindow": 128000, "maxTokens": 16384, "reasoning": true },
@@ -144,6 +141,7 @@ Also add model entries to `~/.pi/agent/models.json` so Pi knows about them:
     "sensenova": {
       "baseUrl": "https://token.sensenova.cn/v1",
       "api": "openai-completions",
+      "apiKey": "sk-...",
       "authHeader": true,
       "models": [
         { "id": "sensenova-6.7-flash-lite", "name": "sense-lite", "input": ["text","image"], "contextWindow": 256000, "maxTokens": 64000, "reasoning": false },
@@ -169,14 +167,6 @@ Pi's native compaction uses your session's current model. If that's an expensive
 If `compaction.model` is set, all `/compact` and auto-compaction summaries go through that model. If not set, Pi uses the session's current model.
 
 Pi's auto-compaction triggers when `contextTokens > contextWindow - 16384` (reserving 16K tokens for the response). This is Pi's built-in default and works well — no configuration needed.
-
-### Provider API types
-
-| Provider type | `api` value |
-|---------------|-------------|
-| OpenAI-compatible (DeepSeek, OpenAI, OpenRouter, Ollama, SenseNova) | `openai-completions` |
-| Anthropic | `anthropic-messages` |
-| Google | `google-generative-ai` |
 
 ### Customizing agents
 
@@ -221,8 +211,8 @@ This is **turn-based** — one snapshot per message. It uses Pi's session tree A
 ## Files
 
 ```
-config.json          # agents, providers, endpoints, keys (chmod 600)
-models.json          # Pi's model registry
+config.json          # agent models, fallback chains, thinking levels
+models.json          # Pi's model registry (providers, API keys, model defs)
 AGENTS.md            # orchestrator instructions
 agents/*.md          # subagent system prompts
 extensions/picopi/   # the extension (8 TypeScript modules + package.json)
@@ -261,8 +251,8 @@ Honest constraints you may hit:
 - Fixed 60s cooldown — no exponential backoff.
 
 **Config**
-- `config.json` and `models.json` must be kept in sync manually.
-- Cached at load time — `/reload-config` required after manual edits.
+- `config.json` — edit `~/.pi/agent/config.json`, run `/reload-config`.
+- `settings.json` — ensure `defaultModel` + `defaultProvider` match a model in `models.json`, otherwise Pi shows "No models match pattern" on startup. This is cosmetic (the extension overrides the model anyway), but keeps logs clean.
 
 **State files**
 - Concurrent writes from multiple Pi processes on the same project could corrupt todo or checkpoint metadata (rare — typically one session per project).

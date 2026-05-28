@@ -1,5 +1,5 @@
 {
-  "_comment": "=== PICOPI CONFIG (edit this) === Agents reference LABELS that map to explicit provider/modelname fallback chains. NEVER commit or share.",
+  "_comment": "=== PICOPI CONFIG (edit this) === Agents reference LABELS that map to explicit provider/modelname fallback chains. Providers and API keys go in models.json. NEVER commit or share.",
 
   "orchestrator": {
     "model": "quick",
@@ -17,19 +17,6 @@
     "quick": ["deepseek/deepseek-v4-flash",       "sensenova/deepseek-v4-flash"],
     "pro":   ["deepseek/deepseek-v4-pro",         "sensenova/deepseek-v4-pro"],
     "lite":  ["sensenova/sensenova-6.7-flash-lite", "deepseek/deepseek-v4-flash"]
-  },
-
-  "providers": {
-    "deepseek": {
-      "baseUrl": "https://api.deepseek.com",
-      "api": "openai-completions",
-      "key": "YOUR_DEEPSEEK_KEY_HERE"
-    },
-    "sensenova": {
-      "baseUrl": "https://token.sensenova.cn/v1",
-      "api": "openai-completions",
-      "key": "YOUR_SENSENOVA_KEY_HERE"
-    }
   },
 
   "compaction": {

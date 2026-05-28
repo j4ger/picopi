@@ -1,5 +1,7 @@
 /**
- * Subagent tool — spawn isolated Pi processes with provider fallback
+ * Subagent tool — spawn isolated Pi processes with provider fallback.
+ * Uses pi-native model resolution (--model provider/modelId) — no separate
+ * provider config needed; pi resolves credentials from models.json.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

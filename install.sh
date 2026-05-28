@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # picopi installer — copies files into ~/.pi/agent/
-# Add your API keys to ~/.pi/agent/config.json after installation.
+# Add your API keys to ~/.pi/agent/models.json after installation.
 #
 # Usage: ./install.sh [--skip-config]
 #   --skip-config    Skip copying config.json and models.json (for updates)
@@ -83,7 +83,7 @@ if [[ "$SKIP_CONFIG" == true ]]; then
 else
   echo ""
   echo "  Next step: add your API keys"
-  echo -e "  ${YELLOW}→ ${PI_DIR}/config.json${NC}"
+  echo -e "  ${YELLOW}→ ${PI_DIR}/models.json${NC}"
 fi
 echo ""
 echo "  Then: pi"

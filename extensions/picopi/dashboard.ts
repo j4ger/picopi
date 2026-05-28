@@ -34,15 +34,6 @@ export function registerDashboard(pi: ExtensionAPI) {
 function update(ctx: ExtensionContext) {
   try {
     const parts: string[] = [];
-    const cfg = getConfig();
-
-    // Provider health (count providers with non-empty keys)
-    let healthy = 0, total = 0;
-    for (const [, p] of Object.entries(cfg.providers)) {
-      total++;
-      if (p.key && p.key.length > 0 && !p.key.includes("YOUR_")) healthy++;
-    }
-    parts.push(`●${healthy}/${total}`);
 
     // Context usage
     const usage = ctx.getContextUsage?.();
