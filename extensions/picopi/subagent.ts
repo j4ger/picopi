@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getConfig, getAgent, resolveModel, getProvider } from "./config";
+import { getConfig, getAgent, resolveModel } from "./config";
 
 const AGENTS_DIR = join(homedir(), ".pi", "agent", "agents");
 const MAX_DEPTH = 3;
@@ -38,7 +38,7 @@ async function runSubagent(
 ) {
   const cfg = getConfig();
 
-  // Depth guard — global counter, decremented in finally to prevent leaks on throw
+  // Depth guard
   currentDepth++;
   if (currentDepth > MAX_DEPTH) {
     currentDepth--;
@@ -62,18 +62,14 @@ async function runSubagent(
     const fullPrompt = [systemPrompt, "=== YOUR TASK ===", params.task].filter(Boolean).join("\n\n");
     const resolver = resolveModel(agent.model);
 
+    // Pass the full "provider/modelId" string to --model; pi resolves credentials internally
     for (const entry of resolver.chain) {
       const { provider, modelId } = resolver.parse(entry);
-      const p = getProvider(provider);
-      if (!p || !p.key) {
-        onUpdate({ content: [{ type: "text", text: `[subagent] ${provider}: no key in config.json` }] });
-        continue;
-      }
 
       onUpdate({ content: [{ type: "text", text: `[subagent] ${params.agent} (${resolver.label}) via ${provider}...` }] });
 
       try {
-        const result = await spawnPi(p.baseUrl, modelId, agent.thinking, p.api, fullPrompt, agent.timeout || 300, signal);
+        const result = await spawnPi(entry, agent.thinking, fullPrompt, agent.timeout || 300, signal);
         return { content: [{ type: "text", text: result }] };
       } catch (err: any) {
         onUpdate({ content: [{ type: "text", text: `[subagent] ${provider} failed: ${err.message}` }] });
@@ -88,11 +84,12 @@ async function runSubagent(
 }
 
 function spawnPi(
-  baseUrl: string, modelId: string, thinking: string | undefined,
-  api: string, prompt: string, timeoutSec: number, signal: AbortSignal
+  modelRef: string, thinking: string | undefined,
+  prompt: string, timeoutSec: number, signal: AbortSignal
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const args = ["--mode", "json", "-p", "--no-session", "--provider-url", baseUrl, "--api", api, "--model", modelId];
+    // Use --model provider/modelId: pi resolves credentials from its own config
+    const args = ["--mode", "json", "-p", "--no-session", "--model", modelRef];
     if (thinking) args.push("--thinking", thinking);
 
     // PI_OFFLINE=1 speeds up subagent spawn by skipping startup network ops

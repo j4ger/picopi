@@ -17,7 +17,7 @@ export interface Config {
   orchestrator: { model: string; thinking?: string };
   agents: Record<string, AgentConfig>;
   fallbacks: Record<string, string[]>;
-  providers: Record<string, Provider>;
+  providers?: Record<string, Provider>;
 }
 
 let _config: Config | null = null;
@@ -101,7 +101,7 @@ export function getConfig(): Config { return _config || loadConfig(); }
 export function reload(): void { _config = null; }
 
 export function getProvider(name: string): Provider | null {
-  return getConfig().providers[name] || null;
+  return getConfig().providers?.[name] || null;
 }
 
 export function getAgent(name: string): AgentConfig | null {

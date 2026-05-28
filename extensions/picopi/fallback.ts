@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getConfig, resolveModel, getProvider } from "./config";
+import { getConfig, resolveModel } from "./config";
 
 const failures = new Map<string, number>();
 const lastFail = new Map<string, number>();
@@ -24,8 +24,7 @@ export function registerFallback(pi: ExtensionAPI) {
       for (const entry of resolver.chain) {
         const { provider: fbProvider, modelId } = resolver.parse(entry);
         if (fbProvider === provider) continue;
-        const p = getProvider(fbProvider);
-        if (!p || !p.key) continue;
+        // Skip providers that are also failing (tracked by the same circuit breaker)
         if ((failures.get(fbProvider) || 0) >= THRESHOLD) continue;
 
         ctx.ui.notify(`Switched to ${fbProvider}`, "warning");
