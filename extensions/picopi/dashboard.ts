@@ -20,11 +20,17 @@ export function registerDashboard(pi: ExtensionAPI) {
   for (const ev of ["turn_start", "tool_execution_end", "model_select"] as const) {
     pi.on(ev, (_e, ctx) => update(ctx));
   }
-  pi.on("session_start", (_e, ctx) => {
+  pi.on("session_start", async (_e, ctx) => {
     try {
       const resolved = resolveModel(getConfig().orchestrator.model);
-      const orch = resolved.parse(resolved.chain[0]).modelId;
-      ctx.ui.setStatus("picopi", `◆ ${orch}`);
+      const { provider, modelId } = resolved.parse(resolved.chain[0]);
+
+      // Status bar
+      ctx.ui.setStatus("picopi", `◆ ${modelId}`);
+
+      // Sync Pi's TUI footer model display to match the orchestrator
+      const model = ctx.modelRegistry?.find(provider, modelId);
+      if (model) await pi.setModel(model);
     } catch {
       ctx.ui.setStatus("picopi", "◆ picopi — config error");
     }
