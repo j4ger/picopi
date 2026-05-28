@@ -1,0 +1,23 @@
+{
+  "_comment": "Pi model registry. Provider endpoints and actual model names. picopi does NOT read this — it's only for Pi's /model picker.",
+  "providers": {
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com",
+      "api": "openai-completions",
+      "authHeader": true,
+      "models": [
+        { "id": "deepseek-v4-flash", "name": "ds-flash", "input": ["text"], "contextWindow": 128000, "maxTokens": 16384, "reasoning": true },
+        { "id": "deepseek-v4-pro",   "name": "ds-pro",   "input": ["text"], "contextWindow": 128000, "maxTokens": 16384, "reasoning": true }
+      ]
+    },
+    "sensenova": {
+      "baseUrl": "https://token.sensenova.cn/v1",
+      "api": "openai-completions",
+      "authHeader": true,
+      "models": [
+        { "id": "sensenova-6.7-flash-lite", "name": "sense-lite", "input": ["text", "image"], "contextWindow": 256000, "maxTokens": 64000, "reasoning": false },
+        { "id": "deepseek-v4-pro",         "name": "ds-pro",     "input": ["text"], "contextWindow": 128000, "maxTokens": 16384, "reasoning": true }
+      ]
+    }
+  }
+}
