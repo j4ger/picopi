@@ -74,6 +74,12 @@ in
 pkgs.writeShellScriptBin "picopi" ''
   set -euo pipefail
 
+  # Auto-launch tmux if not already inside one.
+  if [ -z "''${TMUX:-}" ]; then
+    export PATH="${pkgs.tmux}/bin:$PATH"
+    exec tmux new-session -s picopi -- "$0" "$@"
+  fi
+
   # The config dir holds ONLY user-owned state. Defaults to ~/.config/picopi;
   # relocate with $PICOPI_HOME. picopi source is never copied here.
   dir="''${PICOPI_HOME:-''${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
