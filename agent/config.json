@@ -1,0 +1,36 @@
+{
+  "_comment": "Shipped DEFAULT config. User overrides live in ~/.config/picopi/config.json (same for every install). Roles map to an alias + thinking + timeout; each alias is an ordered list of provider/id models, first with a working API key wins.",
+
+  "autoResolveOrchestrator": true,
+
+  "orchestrator": {
+    "model": "pro",
+    "thinking": "high"
+  },
+
+  "agents": {
+    "planner":      { "model": "pro",   "thinking": "xhigh",  "timeout": 600 },
+    "explorer":     { "model": "flash", "thinking": "low",    "timeout": 300 },
+    "fixer":        { "model": "flash", "thinking": "medium", "timeout": 180 },
+    "auditor":      { "model": "pro",   "thinking": "high",   "timeout": 300 },
+    "web-searcher": { "model": "flash", "thinking": "low",    "timeout": 300 }
+  },
+
+  "aliases": {
+    "_comment": "Starting point — set these to any provider/model pi supports (see pi's provider docs). Ordered: preferred first, fallbacks after; first with a working key wins.",
+    "pro":   [ "google/gemini-2.5-pro",   "anthropic/claude-opus-4-5" ],
+    "flash": [ "google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5" ]
+  },
+
+  "compaction": {
+    "_comment": "Optional: use a cheaper model for context summarization. Falls back to session model if not set/unavailable.",
+    "model": "flash"
+  },
+
+  "webSearch": {
+    "_comment": "Drives the built-in web_search tool (web.ts) and the web-searcher subagent role. provider: exa|perplexity|brave|duckduckgo|auto. searchModel applies to perplexity. API keys come from env (EXA_API_KEY/PERPLEXITY_API_KEY/BRAVE_API_KEY); none needed for duckduckgo.",
+    "provider": "auto",
+    "searchModel": null,
+    "summaryModel": null
+  }
+}

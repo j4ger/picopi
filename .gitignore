@@ -141,3 +141,17 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+extensions/picopi/node_modules/
+result
+.direnv/
+
+# picopi: real local config with API keys — NEVER commit.
+# Sanitized templates live in examples/ (committed); real config in local/.
+# Only local/README.md (which documents the dir) is tracked.
+/local/*
+!/local/README.md
+*.secrets.env
+secrets.env
+# pi runtime secrets, wherever they land outside the repo's agent/ resources:
+/**/auth.json
+models.local.json

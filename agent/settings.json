@@ -1,0 +1,15 @@
+{
+  "theme": "picopi",
+  "quietStartup": false,
+  "doubleEscapeAction": "fork",
+  "defaultThinkingLevel": "medium",
+  "compaction": {
+    "enabled": true,
+    "keepRecentTokens": 20000
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3
+  },
+  "enableSkillCommands": true
+}
