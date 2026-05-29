@@ -167,7 +167,7 @@ async function runAgent(
 	}
 	args.push("--tools", tools.join(","));
 	// Pass extension path so child pi loads picopi (registers web_search, fetch_content, etc.)
-	args.push("--extension", path.resolve(import.meta.dirname, ".."));
+	args.push("--extension", import.meta.dirname);
 	const timeoutMs = role?.timeout && role.timeout > 0 ? role.timeout * 1000 : undefined;
 
 	let promptDir: string | null = null;
