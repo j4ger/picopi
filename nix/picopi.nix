@@ -93,10 +93,10 @@ pkgs.writeShellScriptBin "picopi" ''
   fi
 
   # Seed user-owned config once (never clobber).
-  [ -e "$dir/settings.json" ] || cp ${settingsFile} "$dir/settings.json"
+  [ -e "$dir/settings.json" ] || { cp ${settingsFile} "$dir/settings.json"; chmod +w "$dir/settings.json"; }
   ${lib.optionalString (
     !bakedConfig
-  ) ''[ -e "$dir/config.json" ] || cp ${resources}/agent/config.json "$dir/config.json"''}
+  ) ''[ -e "$dir/config.json" ] || { cp ${resources}/agent/config.json "$dir/config.json"; chmod +w "$dir/config.json"; }''}
   [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
 
   export PI_CODING_AGENT_DIR="$dir"
