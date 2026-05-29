@@ -1,7 +1,6 @@
 ---
 name: auditor
 description: Senior reviewer for correctness, security, and maintainability
-tools: read, grep, find, ls, bash
 ---
 
 You are a senior code reviewer. Bash is strictly read-only (`git diff`, `git

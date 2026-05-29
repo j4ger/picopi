@@ -36,6 +36,16 @@ const PER_CHILD_OUTPUT_CAP = 50 * 1024; // bytes of model-visible output per chi
 const MAX_DEPTH = 2;
 const DEPTH_ENV = "PICOPI_SUBAGENT_DEPTH";
 
+// Sane tool defaults per agent role. Omitted from agent markdown or config →
+// falls back here. Order: config.json > agent markdown > built-in defaults.
+const BUILT_IN_DEFAULTS: Record<string, string[]> = {
+	planner: ["read", "grep", "find", "ls"],
+	explorer: ["read", "grep", "find", "ls", "bash"],
+	fixer: ["read", "write", "edit", "bash"],
+	auditor: ["read", "grep", "find", "ls", "bash"],
+	"web-searcher": ["web_search", "fetch_content", "read"],
+};
+
 interface AgentDef {
 	name: string;
 	description: string;
@@ -123,6 +133,13 @@ function piInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
+/** Resolve tools: config.json > agent markdown > built-in defaults. */
+function resolveTools(agent: AgentDef, role?: { tools?: string[] }): string[] {
+	if (role?.tools?.length) return role.tools;
+	if (agent.tools?.length) return agent.tools;
+	return BUILT_IN_DEFAULTS[agent.name] ?? ["read", "write", "edit", "bash"];
+}
+
 async function runAgent(
 	defaultCwd: string,
 	agents: AgentDef[],
@@ -141,13 +158,16 @@ async function runAgent(
 
 	const cfg = loadConfig();
 	const role = cfg.agents?.[name];
+	const tools = resolveTools(agent, role);
 	const args = ["--mode", "json", "-p", "--no-session"];
 	if (role) {
 		const pattern = roleModelPattern(cfg, role.model);
 		if (pattern) args.push("--model", pattern);
 		if (role.thinking) args.push("--thinking", role.thinking);
 	}
-	if (agent.tools?.length) args.push("--tools", agent.tools.join(","));
+	args.push("--tools", tools.join(","));
+	// Pass extension path so child pi loads picopi (registers web_search, fetch_content, etc.)
+	args.push("--extension", path.resolve(import.meta.dirname, ".."));
 	const timeoutMs = role?.timeout && role.timeout > 0 ? role.timeout * 1000 : undefined;
 
 	let promptDir: string | null = null;

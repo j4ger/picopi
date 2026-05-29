@@ -23,6 +23,7 @@ interface RoleConfig {
 	model: string;
 	thinking?: ThinkingLevel;
 	timeout?: number;
+	tools?: string[];
 }
 
 export interface PicopiConfig {
