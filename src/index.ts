@@ -6,6 +6,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { configPath, loadConfig } from "./config.ts";
+import { setupFooter } from "./footer.ts";
 import { setupOrchestrator } from "./orchestrator.ts";
 import { setupSubagent } from "./subagent.ts";
 import { setupTodo } from "./todo.ts";
@@ -13,6 +14,7 @@ import { setupUndo } from "./undo.ts";
 import { setupWeb } from "./web.ts";
 
 export default function (pi: ExtensionAPI) {
+	setupFooter(pi);
 	setupOrchestrator(pi);
 	setupUndo(pi);
 	setupTodo(pi);

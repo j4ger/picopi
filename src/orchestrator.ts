@@ -1,28 +1,24 @@
 /**
- * Orchestrator role resolution, the picopi status widget, and cheap-model
+ * Orchestrator role resolution, picopi footer state, and cheap-model
  * compaction.
  *
  * On startup picopi resolves the `orchestrator` role from the central config
  * into a concrete model (walking the alias -> fallback chain) and applies the
- * model + thinking level to the main session. The footer status shows what was
- * resolved so the behaviour is never a mystery.
+ * model + thinking level to the main session. It then feeds the resolved role
+ * into the consolidated footer (see footer.ts), which shows the model by name —
+ * so the behaviour is never a mystery and the model is only displayed once.
  */
 
 import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
-import { type ModelRegistryLike, type PicopiConfig, loadConfig, resolveRoleModel, type ThinkingLevel } from "./config.ts";
+import { type ModelRegistryLike, type PicopiConfig, loadConfig, resolveRoleModel } from "./config.ts";
+import { clearPicopiFooterNote, setPicopiFooter } from "./footer.ts";
 
-const STATUS_KEY = "picopi";
 const COMPACT_TIMEOUT_MS = 120_000;
 
 function registry(ctx: ExtensionContext): ModelRegistryLike {
 	return ctx.modelRegistry as unknown as ModelRegistryLike;
-}
-
-function thinkingTag(level: ThinkingLevel | undefined): string {
-	if (!level || level === "off") return "";
-	return ` ·${level}`;
 }
 
 async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig) {
@@ -33,35 +29,27 @@ async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext, cfg: P
 	}
 
 	const resolved = await resolveRoleModel(registry(ctx), cfg, role.model);
-	const theme = ctx.ui.theme;
 
 	if (!resolved) {
-		ctx.ui.setStatus(
-			STATUS_KEY,
-			theme.fg("warning", "⬡ picopi ") + theme.fg("dim", `no model for "${role.model}" — using session default`),
-		);
+		setPicopiFooter({ role: role.model, note: `no model for "${role.model}" — using session default`, tone: "warning" });
 		return;
 	}
 
 	const ok = await pi.setModel(resolved.model as any);
 	if (!ok) {
-		ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", `⬡ picopi `) + theme.fg("dim", `auth failed for ${resolved.spec}`));
+		setPicopiFooter({ role: role.model, note: `auth failed for ${resolved.spec}`, tone: "warning" });
 		return;
 	}
 	if (role.thinking) pi.setThinkingLevel(role.thinking);
 
-	ctx.ui.setStatus(
-		STATUS_KEY,
-		theme.fg("accent", "⬡ picopi ") +
-			theme.fg("text", role.model) +
-			theme.fg("dim", thinkingTag(role.thinking)) +
-			theme.fg("dim", ` (${resolved.spec})`),
-	);
+	// Footer now owns the model display (by name); we only contribute the role.
+	setPicopiFooter({ role: role.model });
+	clearPicopiFooterNote();
 }
 
-function setReadyStatus(ctx: ExtensionContext) {
-	const theme = ctx.ui.theme;
-	ctx.ui.setStatus(STATUS_KEY, theme.fg("accent", "⬡ picopi ") + theme.fg("dim", "ready"));
+function setReadyStatus(_ctx: ExtensionContext) {
+	setPicopiFooter({ role: undefined });
+	clearPicopiFooterNote();
 }
 
 export function setupOrchestrator(pi: ExtensionAPI) {
