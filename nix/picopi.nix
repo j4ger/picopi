@@ -73,24 +73,11 @@ let
 in
 pkgs.writeShellScriptBin "picopi" ''
   set -euo pipefail
-  jq=${pkgs.jq}/bin/jq
 
   # The config dir holds ONLY user-owned state. Defaults to ~/.config/picopi;
   # relocate with $PICOPI_HOME. picopi source is never copied here.
   dir="''${PICOPI_HOME:-''${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
   mkdir -p "$dir"
-
-  # One-time migration off the old "copy everything into the config dir" layout.
-  # Detected by the legacy .stamp marker. Remove the stale source copies (so they
-  # can't be auto-discovered and conflict with the store ones) and strip the
-  # resource-wiring keys the old build injected into the user's settings.json.
-  if [ -e "$dir/.stamp" ]; then
-    rm -rf "$dir/.stamp" "$dir/src" "$dir/prompts" "$dir/themes" "$dir/agents" "$dir/AGENTS.md"
-    if [ -e "$dir/settings.json" ]; then
-      "$jq" 'del(.extensions, .prompts, .themes, .skills)' "$dir/settings.json" > "$dir/settings.json.tmp" \
-        && mv "$dir/settings.json.tmp" "$dir/settings.json"
-    fi
-  fi
 
   # Seed user-owned config once (never clobber).
   [ -e "$dir/settings.json" ] || { cp ${settingsFile} "$dir/settings.json"; chmod +w "$dir/settings.json"; }

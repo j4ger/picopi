@@ -39,16 +39,10 @@
         );
     in
     {
-      packages = eachSystem (
-        system:
-        let
-          picopi = build system { };
-        in
-        {
-          default = picopi;
-          inherit picopi;
-        }
-      );
+      packages = eachSystem (system: {
+        default = build system { };
+        picopi = build system { };
+      });
 
       # Reusable builder for composing picopi with overrides in other flakes.
       lib = eachSystem (system: {
@@ -61,12 +55,8 @@
         picopi = build prev.stdenv.hostPlatform.system { };
       };
 
-      formatter = eachSystem (
-        system:
-        let
-          pkgs = import nixpkgs { inherit system; };
-        in
-        pkgs.nixfmt-rfc-style or pkgs.nixfmt
+      formatter = eachSystem (system:
+        (import nixpkgs { inherit system; }).nixfmt-rfc-style
       );
     };
 }
