@@ -57,6 +57,9 @@ export function createPane(name: string, task: string): LogFn {
 	const header = `── ${name} ── ${task}\n`;
 	fs.appendFileSync(logFile, header);
 
+	// Enable mouse support (scrolling, pane selection, resizing)
+	tmux("set", "-g", "mouse", "on");
+
 	// Create pane: split right, 30% width, tail the log file
 	const parentId = currentPane();
 	const paneId = tmux(
