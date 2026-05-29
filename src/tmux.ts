@@ -15,7 +15,6 @@ export type LogFn = (line: string) => void;
 interface PaneState {
 	id: string;
 	logFile: string;
-	timer?: ReturnType<typeof setTimeout>;
 }
 
 const panes = new Map<string, PaneState>();
@@ -45,7 +44,6 @@ export function createPane(name: string, task: string): LogFn {
 	// Clean up any existing pane with the same name
 	const existing = panes.get(name);
 	if (existing) {
-		if (existing.timer) clearTimeout(existing.timer);
 		killPane(existing.id);
 		panes.delete(name);
 	}
@@ -75,6 +73,9 @@ export function createPane(name: string, task: string): LogFn {
 
 	panes.set(name, { id: cleanId, logFile });
 
+	// Keep focus on the main pane
+	tmux("select-pane", "-t", parentId);
+
 	// Return log function
 	return (line: string) => {
 		try {
@@ -86,33 +87,36 @@ export function createPane(name: string, task: string): LogFn {
 }
 
 /**
- * Finalize a pane: write completion status and schedule cleanup.
+ * Finalize a pane: write completion status and close it.
+ * Shows a status message in the main pane.
  * Keeps pane open on error.
  */
 export function finalizePane(name: string, isError: boolean = false): void {
 	const state = panes.get(name);
 	if (!state) return;
 
-	// Write final status
-	fs.appendFileSync(state.logFile, `✓ ${name} — done\n`);
-
 	if (isError) {
-		// Keep pane open on error
+		// Keep pane open on error, show error status in main pane
+		const parentId = currentPane();
+		tmux("send-keys", "-t", parentId, `echo '\n✗ ${name} — failed'`, "Enter");
 		return;
 	}
 
-	// Auto-close after 5 seconds
-	state.timer = setTimeout(() => {
-		killPane(state.id);
-		panes.delete(name);
-		// Clean up temp files
-		try {
-			fs.unlinkSync(state.logFile);
-			fs.rmdirSync(path.dirname(state.logFile));
-		} catch {
-			// Ignore cleanup errors
-		}
-	}, 5000);
+	// Close the pane immediately
+	killPane(state.id);
+	panes.delete(name);
+
+	// Clean up temp files
+	try {
+		fs.unlinkSync(state.logFile);
+		fs.rmdirSync(path.dirname(state.logFile));
+	} catch {
+		// Ignore cleanup errors
+	}
+
+	// Show success status in main pane
+	const parentId = currentPane();
+	tmux("send-keys", "-t", parentId, `echo '\n✓ ${name} — done'`, "Enter");
 }
 
 /** Kill a tmux pane by ID. */
