@@ -41,7 +41,7 @@ let
   # baked config to be folded in; otherwise it is just a copy of the repo.
   resources = pkgs.runCommand "picopi-resources" { } ''
     mkdir -p $out
-    cp -r ${src + "/src"} $out/src
+    cp -r ${src + "/src"} $out/picopi
     cp -r ${src + "/agent"} $out/agent
     chmod -R u+w $out
     cp ${configFile} $out/agent/config.json
@@ -53,7 +53,7 @@ let
   resourceFlags = lib.escapeShellArgs (
     [
       "--extension"
-      "${resources}/src"
+      "${resources}/picopi"
     ]
     ++ lib.concatMap (e: [
       "--extension"
