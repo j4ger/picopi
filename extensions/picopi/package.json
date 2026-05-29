@@ -1,9 +1,0 @@
-{
-  "name": "picopi",
-  "version": "1.0.0",
-  "description": "Multi-tier agent for Pi — auto-delegation, provider fallback, checkpoints",
-  "keywords": ["pi-package", "agent", "multi-tier", "subagent"],
-  "pi": {
-    "extensions": ["./extension.ts"]
-  }
-}
