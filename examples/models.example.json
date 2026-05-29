@@ -1,5 +1,5 @@
 {
-  "_comment": "Pi model registry. Copy to local/models.json, keys as $ENV_VAR. See pi's docs/models.md.",
+  "_comment": "Pi model registry. Copy to your config dir's models.json (~/.config/picopi/models.json), keys as $ENV_VAR. See pi's docs/models.md.",
   "providers": {
     "anthropic": { "apiKey": "$ANTHROPIC_API_KEY" },
     "google": { "apiKey": "$GEMINI_API_KEY" },

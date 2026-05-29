@@ -1,36 +1,32 @@
-# Builds a contained pi "agent directory" (everything in the Nix store) and
-# returns a wrapper package that runs pi against a writable copy of it via
-# PI_CODING_AGENT_DIR. The user only supplies model API keys (env).
+# Builds picopi as a wrapper around pi. ALL picopi source (the extension,
+# prompts, themes, agents, AGENTS.md, default config) lives read-only in the
+# Nix store and is handed to pi via CLI flags — nothing is copied into the
+# config dir. The config dir (~/.config/picopi by default) holds ONLY
+# user-owned, writable state: config.json, settings.json, models.json,
+# auth.json, sessions/, npm/. The user supplies model API keys (env/auth).
 {
   pkgs,
   piPkg, # pi coding-agent package from pi.nix
   src, # picopi repo root
-  extraSettings ? { }, # deep-merged into settings.json
+  extraSettings ? { }, # deep-merged into the seeded settings.json default
   picopiConfig ? null, # path/attrs replacing config.json (null = bundled)
-  extraExtensions ? [ ], # extra extension dirs/files
-  extraAgents ? [ ], # extra agent .md files
+  extraExtensions ? [ ], # extra extension dirs/files (passed as -e flags)
+  extraAgents ? [ ], # extra agent .md files (merged into the agents dir)
   extraEnv ? { }, # env vars baked into the wrapper
 }:
 
 let
   inherit (pkgs) lib;
 
-  # settings.json: bundled defaults <- extraSettings <- fixed resource paths.
-  # All functionality ships as one self-contained extension, so no packages are
-  # fetched: the build is fast and fully offline/reproducible.
-  settings =
-    lib.recursiveUpdate (lib.recursiveUpdate (lib.importJSON (src + "/agent/settings.json")) extraSettings)
-      {
-        packages = [ ];
-        extensions = [ "src" ] ++ map toString extraExtensions;
-        skills = [ ];
-        prompts = [ "prompts" ];
-        themes = [ "themes" ];
-      };
+  # Seeded settings.json: the repo default deep-merged with extraSettings. These
+  # are USER PREFERENCES ONLY (theme name, thinking level, compaction, ...).
+  # Crucially, NO resource wiring (extensions/prompts/themes paths) lives here,
+  # so a once-seeded settings.json can never go stale against a new build.
+  settings = lib.recursiveUpdate (lib.importJSON (src + "/agent/settings.json")) extraSettings;
 
-  # A flake may bake a custom config; otherwise the user's config.json wins.
+  # A flake may bake a custom picopi config; otherwise the user's config wins.
   bakedConfig = picopiConfig != null;
-  configJson =
+  configFile =
     if !bakedConfig then
       src + "/agent/config.json"
     else if builtins.isAttrs picopiConfig then
@@ -38,60 +34,75 @@ let
     else
       picopiConfig;
 
-  # The store template for the agent dir: the repo's agent/ tree plus the merged
-  # settings.json and the src/ extension. config.json/settings.json are the
-  # seeded defaults; the wrapper copies them into the live dir only if absent.
-  agentDir = pkgs.runCommand "picopi-agent-dir" { } ''
-    cp -r ${src + "/agent"} $out
-    chmod -R u+w $out
-    cp ${pkgs.writeText "settings.json" (builtins.toJSON settings)} $out/settings.json
-    cp ${configJson} $out/config.json
+  # The read-only resource tree in the store. Mirrors the repo layout (src/ and
+  # agent/{prompts,themes,agents,AGENTS.md,config.json}) so the extension's
+  # repo-relative fallbacks (here/../agent/...) resolve agents and the default
+  # config without any settings wiring. Only built to allow extraAgents and a
+  # baked config to be folded in; otherwise it is just a copy of the repo.
+  resources = pkgs.runCommand "picopi-resources" { } ''
+    mkdir -p $out
     cp -r ${src + "/src"} $out/src
-    ${lib.concatMapStringsSep "\n" (a: "cp ${a} $out/agents/") extraAgents}
-    # pi resolves the extension's peer deps (@earendil-works/*, typebox) via the
-    # NODE_PATH its own wrapper sets, so no node_modules is needed here.
+    cp -r ${src + "/agent"} $out/agent
+    chmod -R u+w $out
+    cp ${configFile} $out/agent/config.json
+    ${lib.concatMapStringsSep "\n" (a: "cp ${a} $out/agent/agents/") extraAgents}
   '';
 
-  # Picopi-owned resources, refreshed from the store on every version change.
-  # User-owned files (config.json, settings.json, models.json, auth.json,
-  # sessions/, npm/) are seeded once and then never touched.
-  shipped =
+  # CLI flags that point pi at the store resources. These are ADDITIVE: project
+  # AGENTS.md, .pi/extensions, etc. are still discovered normally.
+  resourceFlags = lib.escapeShellArgs (
     [
-      "AGENTS.md"
-      "themes"
-      "agents"
-      "prompts"
-      "src"
+      "--extension"
+      "${resources}/src"
     ]
-    # A baked config is flake-controlled, so refresh it instead of seeding once.
-    ++ lib.optional bakedConfig "config.json";
-  seeded = [ "settings.json" ] ++ lib.optional (!bakedConfig) "config.json";
+    ++ lib.concatMap (e: [
+      "--extension"
+      (toString e)
+    ]) extraExtensions
+    ++ [
+      "--prompt-template"
+      "${resources}/agent/prompts"
+      "--theme"
+      "${resources}/agent/themes"
+      "--append-system-prompt"
+      "${resources}/agent/AGENTS.md"
+    ]
+  );
 
+  settingsFile = pkgs.writeText "settings.json" (builtins.toJSON settings);
 in
 pkgs.writeShellScriptBin "picopi" ''
   set -euo pipefail
-  # The agent dir IS the config dir. Defaults to ~/.config/picopi; relocate with
-  # $PICOPI_HOME. Picopi resources refresh on version change; user files persist.
+  jq=${pkgs.jq}/bin/jq
+
+  # The config dir holds ONLY user-owned state. Defaults to ~/.config/picopi;
+  # relocate with $PICOPI_HOME. picopi source is never copied here.
   dir="''${PICOPI_HOME:-''${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
   mkdir -p "$dir"
-  # Seed user-owned config once (never clobber).
-  for f in ${lib.concatStringsSep " " seeded}; do
-    [ -e "$dir/$f" ] || cp "${agentDir}/$f" "$dir/$f"
-  done
-  [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
-  # Refresh picopi resources on version change.
-  if [ "$(cat "$dir/.stamp" 2>/dev/null || true)" != "${agentDir}" ]; then
-    for f in ${lib.concatStringsSep " " shipped}; do
-      rm -rf "$dir/$f"
-      cp -rL "${agentDir}/$f" "$dir/$f"
-    done
-    chmod -R u+w "$dir"
-    echo "${agentDir}" > "$dir/.stamp"
+
+  # One-time migration off the old "copy everything into the config dir" layout.
+  # Detected by the legacy .stamp marker. Remove the stale source copies (so they
+  # can't be auto-discovered and conflict with the store ones) and strip the
+  # resource-wiring keys the old build injected into the user's settings.json.
+  if [ -e "$dir/.stamp" ]; then
+    rm -rf "$dir/.stamp" "$dir/src" "$dir/prompts" "$dir/themes" "$dir/agents" "$dir/AGENTS.md"
+    if [ -e "$dir/settings.json" ]; then
+      "$jq" 'del(.extensions, .prompts, .themes, .skills)' "$dir/settings.json" > "$dir/settings.json.tmp" \
+        && mv "$dir/settings.json.tmp" "$dir/settings.json"
+    fi
   fi
+
+  # Seed user-owned config once (never clobber).
+  [ -e "$dir/settings.json" ] || cp ${settingsFile} "$dir/settings.json"
+  ${lib.optionalString (
+    !bakedConfig
+  ) ''[ -e "$dir/config.json" ] || cp ${resources}/agent/config.json "$dir/config.json"''}
+  [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
+
   export PI_CODING_AGENT_DIR="$dir"
-  ${lib.optionalString bakedConfig ''export PICOPI_CONFIG="$dir/config.json"''}
+  ${lib.optionalString bakedConfig ''export PICOPI_CONFIG="${resources}/agent/config.json"''}
   ${lib.concatStringsSep "\n  " (
     lib.mapAttrsToList (n: v: "export ${n}=${lib.escapeShellArg v}") extraEnv
   )}
-  exec ${lib.getExe piPkg} "$@"
+  exec ${lib.getExe piPkg} ${resourceFlags} "$@"
 ''

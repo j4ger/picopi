@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to local/config.json (dev) or your agent dir's config.json. Roles -> alias + thinking (+ timeout); each alias is an ordered list of provider/id models, first with a working key wins.",
+  "_comment": "Copy to your config dir's config.json (~/.config/picopi/config.json). Roles -> alias + thinking (+ timeout); each alias is an ordered list of provider/id models, first with a working key wins.",
 
   "orchestrator": { "model": "pro", "thinking": "high" },
 

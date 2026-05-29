@@ -45,22 +45,24 @@ The installer drops a `picopi` command in `~/.local/bin` (override with
 `~/.pi/agent` stay untouched. If `~/.local/bin` isn't on your `PATH`, the
 installer tells you.
 
-Everything lives in one directory — **`~/.config/picopi/`** — for every install
-method. It's the pi agent dir, so it holds both picopi's resources and pi's own
-config:
+Your config dir — **`~/.config/picopi/`** by default — holds *only* your own
+state. picopi's source (the extension, prompts, themes, agents, AGENTS.md) lives
+read-only in the Nix store (or the repo, for the script installer) and is handed
+to pi via CLI flags; nothing is ever copied into the config dir:
 
 ```
 ~/.config/picopi/
   config.json     picopi roles/aliases   ┐
   models.json     providers/models       ├ edit these
   settings.json   pi settings            ┘
-  src/ agents/ prompts/ themes/          picopi resources (managed)
   auth.json  sessions/  …                pi state
 ```
 
-First launch seeds `config.json`/`settings.json`/`models.json` (the script
-installer writes them immediately; Nix on first run) and never overwrites them
-afterward. Existing pi settings are merged in, preserving your current setup.
+First launch seeds `config.json`/`settings.json`/`models.json` and never
+overwrites them afterward. Because no resource paths are written into your
+config, a new build's prompts/themes/agents take effect immediately — there's
+nothing to refresh and nothing to go stale. (Old installs that copied source
+into the config dir are migrated automatically on first run of the new build.)
 
 ## 2. Authenticate
 
@@ -180,22 +182,6 @@ Keys use `$ENV_VAR` references so no secret lands in a config file. See
 > Both files live directly in the agent dir (`~/.config/picopi/` by default) for
 > every install, and persist across upgrades.
 
-## Dev loop (hack on picopi itself)
-
-Run from a clone with no install and no Nix rebuild. The helpers keep all real
-config under the gitignored `local/`:
-
-```bash
-./scripts/setup-keys.sh        # examples/* -> local/{secrets.env,models.json,config.json}
-$EDITOR local/secrets.env      # your keys go here (the only place)
-./scripts/dev.sh "explain this repo"   # runs picopi from source; live-reloads code edits
-```
-
-`scripts/dev.sh` sources `local/secrets.env`, builds a throwaway agent dir at
-`local/picopi/`, and symlinks the live `src/` so edits apply immediately. Secrets
-stay only in `secrets.env` (referenced as `$ENV_VAR` from `models.json`) and
-never touch the git tree.
-
 ## Composing into other flakes
 
 ```nix
@@ -233,39 +219,43 @@ rewinds one full turn (conversation + files) in a single keystroke;
 
 ## How it's packaged
 
-The repo's `agent/` directory is the template for **the** agent dir, which by
-design is also the config dir (pi reads everything from `PI_CODING_AGENT_DIR`).
-The Nix wrapper points it at `$PICOPI_HOME` (default `~/.config/picopi`); the
-non-Nix installer and `dev.sh` populate the same kind of dir. On launch, picopi
-resources (`src/`, `agents/`, `prompts/`, `themes/`, `AGENTS.md`) are refreshed
-from the store/repo, while user files (`config.json`, `settings.json`,
-`models.json`, `auth.json`, `sessions/`) are seeded once and then left alone —
-no symlinks anywhere. A flake that bakes a config ships it as `config.json` and
-pins it via `$PICOPI_CONFIG`. pi resolves the extension's peer deps via its own
-`NODE_PATH`, so no `node_modules` is shipped.
+picopi's source lives read-only in the Nix store (built from the repo's `src/`
+and `agent/` trees) and is handed to pi entirely through CLI flags:
+`--extension <store>/src`, `--prompt-template`, `--theme`, and
+`--append-system-prompt <store>/agent/AGENTS.md`. The wrapper sets
+`PI_CODING_AGENT_DIR` to the config dir (`$PICOPI_HOME`, default
+`~/.config/picopi`), which holds *only* user-owned, pi-writable state:
+`config.json`, `settings.json`, `models.json`, `auth.json`, `sessions/`. Those
+are seeded once and then left alone; no source is ever copied in, so there's
+nothing to refresh and no stamp/sync to drift. The subagent extension finds its
+`agents/` and default `config.json` via repo-relative fallbacks next to the
+loaded extension, so no settings wiring is needed. A flake that bakes a config
+pins it via `$PICOPI_CONFIG`. The non-Nix installer does the same, loading
+source from the repo. pi resolves the extension's peer deps via its own
+`NODE_PATH`, so no `node_modules` is shipped. Old installs that copied source
+into the config dir are migrated automatically on first run.
 
 ## Layout
 
 ```
 src/                  # the one extension: index + web, undo, todo, subagent, orchestrator, config
-agent/                # template for the agent dir (= config dir, ~/.config/picopi by default)
-  config.json         #   default picopi roles/aliases (seeded, then user-owned)
-  settings.json       #   default pi settings (seeded, then user-owned)
-  AGENTS.md           #   operating rules baked into the system prompt
+agent/                # read-only resources + seeded user-config defaults
+  config.json         #   default picopi roles/aliases (seeded once, then user-owned)
+  settings.json       #   default pi settings (seeded once, then user-owned)
+  AGENTS.md           #   operating rules appended to the system prompt
   agents/*.md         #   subagent prompts (model comes from config.json)
   prompts/*.md        #   workflow templates
   themes/picopi.json  #   the picopi theme
 examples/             # sanitized config templates (keys as $ENV refs)
-scripts/              # install.sh (non-Nix), setup-keys.sh, dev.sh
-local/                # gitignored: your real keys + dev agent dir
-nix/picopi.nix        # agent-dir + wrapper builder
+scripts/              # install.sh (non-Nix installer)
+nix/picopi.nix        # store-resources + wrapper builder
 flake.nix             # packages, lib.mkPicopi, homeModules, overlay
 ```
 
 ## TODO
 
-- **Updating**: document/streamline updates. Nix: `nix profile upgrade picopi`
-  (or `nix run --refresh`); non-Nix: `git pull && ./scripts/install.sh`. Resources
-  refresh automatically; `config.json`/`settings.json`/`models.json` are
-  seeded-once, so new *default* aliases/settings don't reach existing installs —
-  consider a merge/migration step.
+- **Updating**: Nix: `nix profile upgrade picopi` (or `nix run --refresh`);
+  non-Nix: `git pull` (the launcher loads source from the repo, so a pull is
+  enough). Source updates apply immediately. `config.json`/`settings.json`/
+  `models.json` are seeded-once, so new *default* aliases/settings don't reach
+  existing installs — consider a merge/migration step.
