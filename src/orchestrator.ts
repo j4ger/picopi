@@ -76,7 +76,7 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 		if (!resolved) return;
 
 		const auth = await registry(ctx).getApiKeyAndHeaders(resolved.model);
-		if (!auth.ok || !auth.apiKey) return;
+		if (!auth.ok) return;
 
 		const { preparation, signal } = event;
 		const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;

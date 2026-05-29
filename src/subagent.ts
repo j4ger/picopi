@@ -44,7 +44,7 @@ interface AgentDef {
 }
 
 function discoverAgents(): AgentDef[] {
-	const here = import.meta.dirname ?? __dirname;
+	const here = import.meta.dirname;
 	const dirs = [
 		path.join(getAgentDir(), "agents"),
 		path.resolve(here, "..", "agents"), // installed agent dir

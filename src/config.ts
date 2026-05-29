@@ -34,7 +34,7 @@ export interface PicopiConfig {
 	webSearch?: { provider?: string | null; searchModel?: string | null; summaryModel?: string | null };
 }
 
-const here = import.meta.dirname ?? __dirname;
+const here = import.meta.dirname;
 
 function candidatePaths(): string[] {
 	const out: string[] = [];
@@ -69,8 +69,13 @@ export function loadConfig(): PicopiConfig {
 			const cfg = stripComments(JSON.parse(fs.readFileSync(p, "utf-8"))) as PicopiConfig;
 			cache = { file: p, mtime: mtimeMs, cfg };
 			return cfg;
-		} catch {
-			/* try next */
+		} catch (err) {
+			// Warn when a file exists but can't be parsed (syntax error, etc.)
+			try {
+				if (fs.existsSync(p)) console.warn(`picopi: failed to load config from ${p} (${err instanceof Error ? err.message : err}), falling back`);
+			} catch {
+				/* eexist race, ignore */
+			}
 		}
 	}
 	return {};
@@ -104,7 +109,7 @@ export async function resolveRoleModel(
 		if (!model) continue;
 		try {
 			const auth = await registry.getApiKeyAndHeaders(model);
-			if (auth.ok && auth.apiKey) return { model, spec };
+			if (auth.ok && (auth.apiKey || auth.headers)) return { model, spec };
 		} catch {
 			/* try next */
 		}
