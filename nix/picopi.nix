@@ -86,6 +86,9 @@ pkgs.writeShellScriptBin "picopi" ''
   ) ''[ -e "$dir/config.json" ] || { cp ${resources}/agent/config.json "$dir/config.json"; chmod +w "$dir/config.json"; }''}
   [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
 
+  # tmux for subagent pane visibility
+  export PATH="${pkgs.tmux}/bin:$PATH"
+
   export PI_CODING_AGENT_DIR="$dir"
   ${lib.optionalString bakedConfig ''export PICOPI_CONFIG="${resources}/agent/config.json"''}
   ${lib.concatStringsSep "\n  " (

@@ -14,7 +14,6 @@
  * Modes:
  *   single   { agent, task }
  *   parallel { tasks: [{agent, task}] }
- *   chain    { chain: [{agent, task}] }  // {previous} placeholder
  */
 
 import { spawn } from "node:child_process";
@@ -27,6 +26,7 @@ import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } fr
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig, roleModelPattern } from "./config.ts";
+import { type LogFn, createPane, finalizePane, isTmux } from "./tmux.ts";
 
 const MAX_PARALLEL = 6;
 const MAX_CONCURRENCY = 3;
@@ -130,6 +130,7 @@ async function runAgent(
 	task: string,
 	step: number | undefined,
 	signal: AbortSignal | undefined,
+	logFn?: LogFn,
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === name);
 	const base: RunResult = { agent: name, task, exitCode: 0, messages: [], stderr: "", step };
@@ -196,6 +197,15 @@ async function runAgent(
 						if (!base.model && msg.model) base.model = msg.model;
 						if (msg.stopReason) base.stopReason = msg.stopReason;
 						if (msg.errorMessage) base.errorMessage = msg.errorMessage;
+						// Log text output
+						for (const p of msg.content) {
+							if (p.type === "text" && p.text.trim()) logFn?.(p.text.trim());
+						}
+					}
+					if (msg.role === "toolResult") {
+						for (const p of msg.content) {
+							if (p.type === "text" && p.text.trim()) logFn?.(`  → ${p.text.trim().split("\n")[0]}`);
+						}
 					}
 				}
 			};
@@ -264,7 +274,6 @@ const Params = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task (single mode)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task}" })),
-	chain: Type.Optional(Type.Array(TaskItem, { description: "Chain: sequential {agent, task}, use {previous} in task" })),
 });
 
 export function setupSubagent(pi: ExtensionAPI) {
@@ -274,7 +283,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 		description: [
 			"Delegate to a specialist subagent with an isolated context window.",
 			"Agents: planner, explorer, fixer, auditor, web-searcher (see agents/ dir).",
-			"Models/thinking come from central config.json. Modes: single {agent,task}, parallel {tasks}, chain {chain} with {previous}.",
+			"Models/thinking come from central config.json. Modes: single {agent,task}, parallel {tasks}.",
 		].join(" "),
 		parameters: Params,
 		promptSnippet: "Delegate scoped work to specialist subagents (planner/explorer/fixer/auditor/web-searcher)",
@@ -293,41 +302,67 @@ export function setupSubagent(pi: ExtensionAPI) {
 			const agents = discoverAgents();
 			const hasSingle = Boolean(params.agent && params.task);
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
-			const hasChain = (params.chain?.length ?? 0) > 0;
-			if (Number(hasSingle) + Number(hasTasks) + Number(hasChain) !== 1) {
+			if (Number(hasSingle) + Number(hasTasks) !== 1) {
 				const avail = agents.map((a) => `${a.name}: ${a.description}`).join("\n");
 				return { content: [{ type: "text", text: `Provide exactly one mode.\nAvailable agents:\n${avail}` }], details: { results: [] } };
 			}
 
-			if (hasChain) {
-				const results: RunResult[] = [];
-				let prev = "";
-				for (let i = 0; i < params.chain!.length; i++) {
-					const s = params.chain![i];
-					const r = await runAgent(ctx.cwd, agents, s.agent, s.task.replace(/\{previous\}/g, prev), i + 1, signal);
-					results.push(r);
-					if (failed(r))
-						return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${s.agent}): ${capOutput(output(r))}` }], details: { results }, isError: true };
-					prev = finalOutput(r.messages);
-				}
-				return { content: [{ type: "text", text: capOutput(finalOutput(results[results.length - 1].messages) || "(no output)") }], details: { results } };
-			}
+			// tmux: create pane(s) for visibility
+			const useTmux = isTmux();
+			const logFns = new Map<string, LogFn>();
+
+			const setupPane = (agentName: string, task: string) => {
+				if (!useTmux) return () => {};
+				const fn = createPane(agentName, task);
+				logFns.set(agentName, fn);
+				return fn;
+			};
+
+			const teardownPane = (agentName: string, isError: boolean) => {
+				if (!useTmux) return;
+				finalizePane(agentName, isError);
+				logFns.delete(agentName);
+			};
 
 			if (hasTasks) {
 				if (params.tasks!.length > MAX_PARALLEL)
 					return { content: [{ type: "text", text: `Too many tasks (max ${MAX_PARALLEL})` }], details: { results: [] } };
-				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, (t) => runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal));
+
+				// Create panes for all parallel tasks
+				const logFnsList = params.tasks!.map((t) => setupPane(t.agent, t.task));
+
+				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, async (t, i) => {
+					try {
+						return await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
+					} finally {
+						teardownPane(t.agent, false); // will check failed after
+					}
+				});
+
+				// Finalize panes with error status
+				for (const r of results) {
+					if (failed(r)) finalizePane(r.agent, true);
+				}
+
 				const ok = results.filter((r) => !failed(r)).length;
 				const text = results.map((r) => `### [${r.agent}] ${failed(r) ? "failed" : "ok"}\n\n${capOutput(output(r))}`).join("\n\n---\n\n");
 				return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} succeeded\n\n${text}` }], details: { results } };
 			}
 
-			const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, undefined, signal);
-			if (failed(r)) return { content: [{ type: "text", text: `Agent ${r.stopReason || "failed"}: ${capOutput(output(r))}` }], details: { results: [r] }, isError: true };
-			return { content: [{ type: "text", text: capOutput(finalOutput(r.messages) || "(no output)") }], details: { results: [r] } };
+			// Single mode
+			const logFn = setupPane(params.agent!, params.task!);
+			try {
+				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, undefined, signal, logFn);
+				const isError = failed(r);
+				teardownPane(params.agent!, isError);
+				if (isError) return { content: [{ type: "text", text: `Agent ${r.stopReason || "failed"}: ${capOutput(output(r))}` }], details: { results: [r] }, isError: true };
+				return { content: [{ type: "text", text: capOutput(finalOutput(r.messages) || "(no output)") }], details: { results: [r] } };
+			} catch (e) {
+				teardownPane(params.agent!, true);
+				throw e;
+			}
 		},
 		renderCall(args, theme) {
-			if (args.chain?.length) return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `chain (${args.chain.length})`), 0, 0);
 			if (args.tasks?.length) return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `parallel (${args.tasks.length})`), 0, 0);
 			const preview = args.task ? (args.task.length > 60 ? args.task.slice(0, 60) + "…" : args.task) : "…";
 			return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", args.agent || "…") + `\n  ${theme.fg("dim", preview)}`, 0, 0);

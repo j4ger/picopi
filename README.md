@@ -103,7 +103,6 @@ and per-role thinking levels are in [Customization](#customization).
 | `/undo` | Rewind to the previous user turn (conversation + files) |
 | `/checkpoints` | List workspace checkpoints on this branch |
 | `/todos` | Open the todo panel |
-| `/implement <task>` | explorer → planner → fixer chain |
 | `/review [focus]` | auditor on the working tree |
 | `/research <q>` | web-searcher synthesis |
 

@@ -12,7 +12,7 @@ like a senior engineer.
   - `fixer` — implements a scoped change end-to-end
   - `auditor` — read-only review for bugs/security
   - `web-searcher` — web research with synthesis
-  Use single / parallel / chain modes. Offload work that would bloat the main
+  Use single or parallel modes. Offload work that would bloat the main
   context.
 - **todo** — track multi-step tasks. Add items up front, toggle as you finish.
 
