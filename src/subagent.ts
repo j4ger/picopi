@@ -331,37 +331,38 @@ export function setupSubagent(pi: ExtensionAPI) {
 			const useTmux = isTmux();
 			const logFns = new Map<string, LogFn>();
 
-			const setupPane = (agentName: string, task: string) => {
+			const setupPane = (key: string, agentName: string, task: string) => {
 				if (!useTmux) return () => {};
-				const fn = createPane(agentName, task);
-				logFns.set(agentName, fn);
+				const fn = createPane(key, task);
+				logFns.set(key, fn);
 				return fn;
 			};
 
-			const teardownPane = (agentName: string, isError: boolean) => {
+			const teardownPane = (key: string, isError: boolean) => {
 				if (!useTmux) return;
-				finalizePane(agentName, isError);
-				logFns.delete(agentName);
+				finalizePane(key, isError);
+				logFns.delete(key);
 			};
 
 			if (hasTasks) {
 				if (params.tasks!.length > MAX_PARALLEL)
 					return { content: [{ type: "text", text: `Too many tasks (max ${MAX_PARALLEL})` }], details: { results: [] } };
 
-				// Create panes for all parallel tasks
-				const logFnsList = params.tasks!.map((t) => setupPane(t.agent, t.task));
+				// Create panes for all parallel tasks with unique keys
+				const logFnsList = params.tasks!.map((t, i) => setupPane(`${t.agent}:${i}`, t.agent, t.task));
 
 				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, async (t, i) => {
+					const key = `${t.agent}:${i}`;
 					try {
 						return await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
 					} finally {
-						teardownPane(t.agent, false); // will check failed after
+						teardownPane(key, false); // will check failed after
 					}
 				});
 
 				// Finalize panes with error status
-				for (const r of results) {
-					if (failed(r)) finalizePane(r.agent, true);
+				for (let i = 0; i < results.length; i++) {
+					if (failed(results[i])) finalizePane(`${results[i].agent}:${i}`, true);
 				}
 
 				const ok = results.filter((r) => !failed(r)).length;
@@ -370,7 +371,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 			}
 
 			// Single mode
-			const logFn = setupPane(params.agent!, params.task!);
+			const logFn = setupPane(params.agent!, params.agent!, params.task!);
 			try {
 				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, undefined, signal, logFn);
 				const isError = failed(r);

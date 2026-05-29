@@ -37,24 +37,26 @@ function currentPane(): string {
 /**
  * Create a tmux pane for a subagent and return a log function.
  * The pane appears to the right, 30% width, tailing a log file.
+ * @param key Unique identifier for this pane (e.g. "web-searcher:0").
+ * @param task Short task description shown in the pane header.
  */
-export function createPane(name: string, task: string): LogFn {
+export function createPane(key: string, task: string): LogFn {
 	if (!isTmux()) return () => {};
 
-	// Clean up any existing pane with the same name
-	const existing = panes.get(name);
+	// Clean up any existing pane with the same key
+	const existing = panes.get(key);
 	if (existing) {
 		killPane(existing.id);
-		panes.delete(name);
+		panes.delete(key);
 	}
 
 	// Create temp log file
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "picopi-tmux-"));
-	const logFile = path.join(tmpDir, `${name}.log`);
+	const logFile = path.join(tmpDir, `${key}.log`);
 	fs.writeFileSync(logFile, "", { mode: 0o600 });
 
 	// Write header
-	const header = `── ${name} ── ${task}\n`;
+	const header = `── ${key} ── ${task}\n`;
 	fs.appendFileSync(logFile, header);
 
 	// Enable mouse support (scrolling, pane selection, resizing)
@@ -74,7 +76,7 @@ export function createPane(name: string, task: string): LogFn {
 	// Clean up the pane ID (remove quotes)
 	const cleanId = paneId.replace(/'/g, "");
 
-	panes.set(name, { id: cleanId, logFile });
+	panes.set(key, { id: cleanId, logFile });
 
 	// Keep focus on the main pane
 	tmux("select-pane", "-t", parentId);
