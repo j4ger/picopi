@@ -1,8 +1,10 @@
 /**
  * tmux pane visibility for subagents.
  *
- * Spawns a pane to the right (30% width) when a subagent runs,
+ * Spawns a pane to the right (50% width) when a subagent runs,
  * tails a structured log file, and auto-closes when the subagent finishes.
+ * When multiple subagents run in parallel, panes split vertically in the
+ * right column with even distribution.
  *
  * Notifications use tmux display-message (status bar) — never send-keys,
  * which would inject keystrokes into pi's stdin and corrupt the editor.
@@ -22,6 +24,7 @@ interface PaneState {
 
 const panes = new Map<string, PaneState>();
 let rightColumnPane: string | null = null;
+let rightColumnPanes: string[] = [];
 
 /** Check if we're inside a tmux session. */
 export function isTmux(): boolean {
@@ -48,6 +51,28 @@ function notify(msg: string): void {
 	} catch {
 		// Ignore — pane may be gone or tmux unavailable
 	}
+}
+
+/**
+ * Get the current tmux window height in rows.
+ */
+function getWindowHeight(): number {
+	try {
+		return parseInt(tmux("display-message", "-p", "'#{window_height}'"), 10);
+	} catch {
+		return 40; // fallback
+	}
+}
+
+/**
+ * Calculate the absolute row count for each pane to ensure even distribution.
+ * Accounts for pane borders (1 row each, N-1 borders for N panes).
+ */
+function calculatePaneRows(totalPanes: number): number {
+	const windowHeight = getWindowHeight();
+	const borders = totalPanes - 1; // N-1 borders between N panes
+	const usableHeight = windowHeight - borders;
+	return Math.max(1, Math.floor(usableHeight / totalPanes));
 }
 
 /**
@@ -80,16 +105,21 @@ export function createPane(key: string, task: string, totalPanes: number = 1, pa
 	// Enable mouse support (scrolling, pane selection, resizing)
 	tmux("set", "-g", "mouse", "on");
 
-	// Calculate even split percentage for vertical space
-	const verticalPercent = Math.floor(100 / totalPanes);
-
 	// First pane creates the right column (50% width).
-	// Each subsequent pane splits from the main parent pane for even distribution.
+	// Each subsequent pane splits from the FIRST pane in the right column.
 	const parentId = currentPane();
 	const isFirst = rightColumnPane === null;
-	const splitArgs = isFirst
-		? ["-h", "-l", "50%", "-t", parentId] // horizontal split → right column
-		: ["-v", "-l", `${verticalPercent}%`, "-t", parentId]; // vertical split from parent pane
+
+	let splitArgs: string[];
+	if (isFirst) {
+		// First pane: horizontal split to create right column (50% width)
+		splitArgs = ["-h", "-l", "50%", "-t", parentId];
+	} else {
+		// Use absolute row count for even distribution
+		const rows = calculatePaneRows(totalPanes);
+		// Always split from the FIRST pane in the right column
+		splitArgs = ["-v", "-l", `${rows}`, "-t", rightColumnPane!];
+	}
 
 	const paneId = tmux(
 		"split-window",
@@ -101,7 +131,12 @@ export function createPane(key: string, task: string, totalPanes: number = 1, pa
 	// Clean up the pane ID (remove quotes)
 	const cleanId = paneId.replace(/'/g, "");
 
-	if (isFirst) rightColumnPane = cleanId;
+	if (isFirst) {
+		rightColumnPane = cleanId;
+		rightColumnPanes = [cleanId];
+	} else {
+		rightColumnPanes.push(cleanId);
+	}
 
 	panes.set(key, { id: cleanId, logFile });
 
@@ -137,7 +172,15 @@ function cleanupPane(name: string): void {
 	if (!state) return;
 	killPane(state.id);
 	panes.delete(name);
-	if (rightColumnPane === state.id) rightColumnPane = null;
+	// Remove from rightColumnPanes array
+	const paneIdx = rightColumnPanes.indexOf(state.id);
+	if (paneIdx !== -1) rightColumnPanes.splice(paneIdx, 1);
+	// Update rightColumnPane reference
+	if (rightColumnPane === state.id) {
+		rightColumnPane = rightColumnPanes.length > 0 ? rightColumnPanes[0] : null;
+	}
+	// When panes are removed, remaining panes keep their sizes
+	// (no automatic rebalancing to avoid layout jumps)
 	try {
 		fs.unlinkSync(state.logFile);
 		fs.rmdirSync(path.dirname(state.logFile));
