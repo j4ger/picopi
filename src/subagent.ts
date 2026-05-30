@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, DynamicBorder, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig, roleModelPattern } from "./config.ts";
@@ -101,7 +101,7 @@ const formatDuration = (ms: number): string => {
 
 const outputPreview = (text: string, maxLen = 120): string => {
 	const first = text.split("\n")[0].trim();
-	return first.length > maxLen ? first.slice(0, maxLen) + "…" : first;
+	return first.length > maxLen ? first.slice(0, maxLen) + "..." : first;
 };
 
 function finalOutput(messages: Message[]): string {
@@ -173,10 +173,12 @@ function updateStatusPanel(context?: any) {
 			statusHandle = extensionCtx.ui.custom(
 				(tui: any, theme: any) => {
 					const container = new Container();
+					const borderColor = (s: string) => theme.fg("borderAccent", s);
+
 					const render = () => {
 						container.clear();
-						container.addChild(new Text(theme.fg("accent", "── Subagents ──"), 0, 0));
-						container.addChild(new Spacer(0));
+						container.addChild(new DynamicBorder(borderColor));
+						container.addChild(new Text(theme.fg("accent", " Subagents "), 0, 0));
 
 						const sorted = [...activeSubagents.values()].sort((a, b) =>
 							a.status === b.status ? a.startTime - b.startTime :
@@ -185,19 +187,19 @@ function updateStatusPanel(context?: any) {
 						);
 
 						for (const sub of sorted) {
-							const icon = sub.status === "running" ? "⏳" : sub.status === "done" ? "✅" : sub.status === "stuck" ? "⚠️" : "❌";
+							const icon = sub.status === "running" ? "o" : sub.status === "done" ? "+" : sub.status === "stuck" ? "!" : "x";
 							const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
 							const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
 
 							container.addChild(new Text(
-								theme.fg(color, `${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
+								theme.fg(color, ` ${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
 								1, 0
 							));
 
 							if (sub.status === "stuck") {
-								container.addChild(new Text(theme.fg("warning", "   ⚠ timeout"), 0, 0));
+								container.addChild(new Text(theme.fg("warning", "    timeout"), 0, 0));
 							} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
-								container.addChild(new Text(theme.fg("dim", `   ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 0, 0));
+								container.addChild(new Text(theme.fg("dim", `    ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 0, 0));
 							}
 						}
 
@@ -210,6 +212,7 @@ function updateStatusPanel(context?: any) {
 							if (stuck) parts.push(`${stuck} stuck`);
 							container.addChild(new Text(theme.fg(stuck ? "warning" : "muted", parts.join(", ")), 1, 0));
 						}
+						container.addChild(new DynamicBorder(borderColor));
 					};
 
 					render();
@@ -473,7 +476,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
 		const d = message.details as SubagentCompleteDetails | undefined;
 		if (!d) return new Text(String(message.content), 0, 0);
-		const icon = d.ok ? theme.fg("success", "✓") : theme.fg("error", "✗");
+		const icon = d.ok ? theme.fg("success", "+") : theme.fg("error", "x");
 		const agent = theme.bold(theme.fg("accent", d.agent));
 		const dur = theme.fg("dim", formatDuration(d.durationMs));
 		const model = d.model ? theme.fg("dim", ` ${d.model}`) : "";
@@ -538,7 +541,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					completed++;
 
 					onUpdate?.({
-						content: [{ type: "text", text: `${completed}/${totalPanes} done — ${t.agent} ${failed(result) ? "failed" : "ok"}` }],
+						content: [{ type: "text", text: `${completed}/${totalPanes} done - ${t.agent} ${failed(result) ? "failed" : "ok"}` }],
 						details: { completed, total: totalPanes },
 					});
 
@@ -619,8 +622,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 		renderCall(args, theme) {
 			if (args.tasks?.length) return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `parallel (${args.tasks.length})`), 0, 0);
-			const preview = args.task ? (args.task.length > 60 ? args.task.slice(0, 60) + "…" : args.task) : "…";
-			return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", args.agent || "…") + `\n  ${theme.fg("dim", preview)}`, 0, 0);
+			const preview = args.task ? (args.task.length > 60 ? args.task.slice(0, 60) + "..." : args.task) : "...";
+			return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", args.agent || "...") + `\n  ${theme.fg("dim", preview)}`, 0, 0);
 		},
 
 		renderResult(result, { expanded }, theme) {
@@ -632,7 +635,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 			const md = getMarkdownTheme();
 			const c = new Container();
 			for (const r of details.results) {
-				const icon = r.stuck ? theme.fg("warning", "⚠") : failed(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
+				const icon = r.stuck ? theme.fg("warning", "!") : failed(r) ? theme.fg("error", "x") : theme.fg("success", "+");
 				const head = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${r.model ? theme.fg("dim", ` ${r.model}`) : ""}`;
 				c.addChild(new Text(head, 0, 0));
 				if (r.stuck) c.addChild(new Text(theme.fg("warning", "Provider stopped responding (timeout)"), 0, 0));
