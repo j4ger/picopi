@@ -18,6 +18,7 @@ interface PaneState {
 }
 
 const panes = new Map<string, PaneState>();
+let rightColumnPane: string | null = null;
 
 /** Check if we're inside a tmux session. */
 export function isTmux(): boolean {
@@ -62,19 +63,25 @@ export function createPane(key: string, task: string): LogFn {
 	// Enable mouse support (scrolling, pane selection, resizing)
 	tmux("set", "-g", "mouse", "on");
 
-	// Create pane: split right, 30% width, tail the log file
+	// First pane creates the right column (30% width).
+	// Additional panes stack vertically within that column.
 	const parentId = currentPane();
+	const isFirst = rightColumnPane === null;
+	const splitArgs = isFirst
+		? ["-h", "-l", "30%", "-t", parentId] // horizontal split → right column
+		: ["-v", "-t", rightColumnPane!]; // vertical split → stack in column
+
 	const paneId = tmux(
 		"split-window",
-		"-h", // horizontal split (right side)
-		"-l", "30%", // 30% width
-		"-t", parentId,
-		"-P", "-F", "'#{pane_id}'", // print new pane ID
+		...splitArgs,
+		"-P", "-F", "'#{pane_id}'",
 		`"tail -f '${logFile}'"`,
 	);
 
 	// Clean up the pane ID (remove quotes)
 	const cleanId = paneId.replace(/'/g, "");
+
+	if (isFirst) rightColumnPane = cleanId;
 
 	panes.set(key, { id: cleanId, logFile });
 
@@ -110,6 +117,7 @@ export function finalizePane(name: string, isError: boolean = false): void {
 	// Close the pane immediately
 	killPane(state.id);
 	panes.delete(name);
+	if (rightColumnPane === state.id) rightColumnPane = null;
 
 	// Clean up temp files
 	try {
