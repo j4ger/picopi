@@ -71,6 +71,7 @@ interface SubagentStatus {
 	startTime: number;
 	endTime?: number;
 	lastActivity?: number;
+	timeout?: number;
 }
 
 interface SubagentCompleteDetails {
@@ -87,7 +88,6 @@ interface SubagentCompleteDetails {
 const activeSubagents = new Map<string, SubagentStatus>();
 let statusHandle: { hide(): void; setHidden(h: boolean): void } | null = null;
 let extensionCtx: any = null;
-let watchdogTimer: NodeJS.Timeout | null = null;
 
 // Helpers
 
@@ -129,30 +129,6 @@ function output(r: RunResult): string {
 		finalOutput(r.messages) || "(no output)";
 }
 
-// Watchdog
-
-function startWatchdog() {
-	if (watchdogTimer) return;
-	watchdogTimer = setInterval(() => {
-		const now = Date.now();
-		for (const [id, sub] of activeSubagents) {
-			if (sub.status !== "running") continue;
-			const timeout = (sub as any).timeout || DEFAULT_TIMEOUT;
-			const lastActivity = sub.lastActivity || sub.startTime;
-			if ((now - lastActivity) / 1000 > timeout) {
-				sub.status = "stuck";
-				sub.endTime = now;
-				updateStatusPanel();
-				setTimeout(() => { activeSubagents.delete(id); updateStatusPanel(); }, 8000);
-			}
-		}
-	}, WATCHDOG_INTERVAL);
-}
-
-function stopWatchdog() {
-	if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
-}
-
 // Status Panel
 
 function updateStatusPanel(context?: any) {
@@ -162,11 +138,8 @@ function updateStatusPanel(context?: any) {
 	if (activeSubagents.size === 0) {
 		statusHandle?.hide();
 		statusHandle = null;
-		stopWatchdog();
 		return;
 	}
-
-	startWatchdog();
 
 	if (!statusHandle) {
 		try {
@@ -236,8 +209,7 @@ function updateStatusPanel(context?: any) {
 
 const trackAgent = (id: string, agent: string, task: string, timeout?: number) => {
 	const now = Date.now();
-	const sub: SubagentStatus = { id, agent, task, status: "running", startTime: now, lastActivity: now };
-	if (timeout) (sub as any).timeout = timeout;
+	const sub: SubagentStatus = { id, agent, task, status: "running", startTime: now, lastActivity: now, timeout };
 	activeSubagents.set(id, sub);
 	updateStatusPanel();
 };
@@ -416,8 +388,15 @@ async function runAgent(
 				for (const l of lines) onLine(l);
 			});
 			proc.stderr.on("data", (d) => { base.stderr += d.toString(); });
-			proc.on("close", (c) => { if (buf.trim()) onLine(buf); resolve(c ?? 0); });
-			proc.on("error", () => resolve(1));
+			proc.on("close", (c) => {
+				if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
+				if (buf.trim()) onLine(buf);
+				resolve(c ?? 0);
+			});
+			proc.on("error", () => {
+				if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
+				resolve(1);
+			});
 
 			if (signal) {
 				const kill = () => { aborted = true; proc.kill("SIGTERM"); setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000); };
@@ -471,7 +450,7 @@ const Params = Type.Object({
 
 export function setupSubagent(pi: ExtensionAPI) {
 	pi.on("session_start", (_e, ctx) => { extensionCtx = ctx; });
-	pi.on("session_shutdown", () => { activeSubagents.clear(); statusHandle?.hide(); statusHandle = null; stopWatchdog(); });
+	pi.on("session_shutdown", () => { activeSubagents.clear(); statusHandle?.hide(); statusHandle = null; });
 
 	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
 		const d = message.details as SubagentCompleteDetails | undefined;
