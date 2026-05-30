@@ -2,7 +2,10 @@
  * tmux pane visibility for subagents.
  *
  * Spawns a pane to the right (30% width) when a subagent runs,
- * tails a structured log file, and auto-closes after completion.
+ * tails a structured log file, and auto-closes when the subagent finishes.
+ *
+ * Notifications use tmux display-message (status bar) — never send-keys,
+ * which would inject keystrokes into pi's stdin and corrupt the editor.
  */
 
 import { execSync } from "node:child_process";
@@ -36,12 +39,26 @@ function currentPane(): string {
 }
 
 /**
+ * Show a brief message in tmux's status bar (no keystroke injection).
+ * Falls back silently if tmux is unavailable.
+ */
+function notify(msg: string): void {
+	try {
+		tmux("display-message", "-d", "3000", msg);
+	} catch {
+		// Ignore — pane may be gone or tmux unavailable
+	}
+}
+
+/**
  * Create a tmux pane for a subagent and return a log function.
- * The pane appears to the right, 30% width, tailing a log file.
+ * The pane appears to the right, with width split evenly among parallel panes.
  * @param key Unique identifier for this pane (e.g. "web-searcher:0").
  * @param task Short task description shown in the pane header.
+ * @param totalPanes Total number of panes to create (for even vertical splitting).
+ * @param paneIndex Index of this pane (0-based) for calculating split percentage.
  */
-export function createPane(key: string, task: string): LogFn {
+export function createPane(key: string, task: string, totalPanes: number = 1, paneIndex: number = 0): LogFn {
 	if (!isTmux()) return () => {};
 
 	// Clean up any existing pane with the same key
@@ -63,13 +80,16 @@ export function createPane(key: string, task: string): LogFn {
 	// Enable mouse support (scrolling, pane selection, resizing)
 	tmux("set", "-g", "mouse", "on");
 
-	// First pane creates the right column (30% width).
-	// Additional panes stack vertically within that column.
+	// Calculate even split percentage for vertical space
+	const verticalPercent = Math.floor(100 / totalPanes);
+
+	// First pane creates the right column (50% width).
+	// Each subsequent pane splits from the main parent pane for even distribution.
 	const parentId = currentPane();
 	const isFirst = rightColumnPane === null;
 	const splitArgs = isFirst
-		? ["-h", "-l", "30%", "-t", parentId] // horizontal split → right column
-		: ["-v", "-t", rightColumnPane!]; // vertical split → stack in column
+		? ["-h", "-l", "50%", "-t", parentId] // horizontal split → right column
+		: ["-v", "-l", `${verticalPercent}%`, "-t", parentId]; // vertical split from parent pane
 
 	const paneId = tmux(
 		"split-window",
@@ -99,37 +119,31 @@ export function createPane(key: string, task: string): LogFn {
 }
 
 /**
- * Finalize a pane: write completion status and close it.
- * Shows a status message in the main pane.
- * Keeps pane open on error.
+ * Finalize a pane: close it immediately and flash a status bar notification.
+ * Panes always close on completion — the tool result in the TUI carries the
+ * full output, so the pane is just a live preview.
  */
 export function finalizePane(name: string, isError: boolean = false): void {
 	const state = panes.get(name);
 	if (!state) return;
 
-	if (isError) {
-		// Keep pane open on error, show error status in main pane
-		const parentId = currentPane();
-		tmux("send-keys", "-t", parentId, `echo '\n✗ ${name} — failed'`, "Enter");
-		return;
-	}
+	notify(isError ? `✗ ${name} — failed` : `✓ ${name} — done`);
+	cleanupPane(name);
+}
 
-	// Close the pane immediately
+/** Remove a pane and clean up its temp files. */
+function cleanupPane(name: string): void {
+	const state = panes.get(name);
+	if (!state) return;
 	killPane(state.id);
 	panes.delete(name);
 	if (rightColumnPane === state.id) rightColumnPane = null;
-
-	// Clean up temp files
 	try {
 		fs.unlinkSync(state.logFile);
 		fs.rmdirSync(path.dirname(state.logFile));
 	} catch {
 		// Ignore cleanup errors
 	}
-
-	// Show success status in main pane
-	const parentId = currentPane();
-	tmux("send-keys", "-t", parentId, `echo '\n✓ ${name} — done'`, "Enter");
 }
 
 /** Kill a tmux pane by ID. */

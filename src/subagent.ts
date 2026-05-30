@@ -296,7 +296,45 @@ const Params = Type.Object({
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task}" })),
 });
 
+interface SubagentCompleteDetails {
+	agent: string;
+	task: string;
+	ok: boolean;
+	model?: string;
+	durationMs: number;
+	preview: string;
+}
+
+function formatDuration(ms: number): string {
+	if (ms < 1000) return `${ms}ms`;
+	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+	const m = Math.floor(ms / 60_000);
+	const s = Math.round((ms % 60_000) / 1000);
+	return `${m}m${s}s`;
+}
+
+function outputPreview(text: string, maxLen = 120): string {
+	const first = text.split("\n")[0].trim();
+	return first.length > maxLen ? first.slice(0, maxLen) + "…" : first;
+}
+
 export function setupSubagent(pi: ExtensionAPI) {
+	// Register message renderer for subagent completion notifications
+	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
+		const d = message.details as SubagentCompleteDetails | undefined;
+		if (!d) return new Text(String(message.content), 0, 0);
+
+		const icon = d.ok ? theme.fg("success", "✓") : theme.fg("error", "✗");
+		const agent = theme.bold(theme.fg("accent", d.agent));
+		const dur = theme.fg("dim", formatDuration(d.durationMs));
+		const model = d.model ? theme.fg("dim", ` ${d.model}`) : "";
+
+		let text = `${icon} ${agent}${model} ${dur}`;
+		if (d.preview) text += `\n${theme.fg("dim", d.preview)}`;
+
+		return new Text(text, 1, 0);
+	});
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -331,9 +369,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 			const useTmux = isTmux();
 			const logFns = new Map<string, LogFn>();
 
-			const setupPane = (key: string, agentName: string, task: string) => {
+			const setupPane = (key: string, agentName: string, task: string, totalPanes: number = 1, paneIndex: number = 0) => {
 				if (!useTmux) return () => {};
-				const fn = createPane(key, task);
+				const fn = createPane(key, task, totalPanes, paneIndex);
 				logFns.set(key, fn);
 				return fn;
 			};
@@ -349,37 +387,83 @@ export function setupSubagent(pi: ExtensionAPI) {
 					return { content: [{ type: "text", text: `Too many tasks (max ${MAX_PARALLEL})` }], details: { results: [] } };
 
 				// Create panes for all parallel tasks with unique keys
-				const logFnsList = params.tasks!.map((t, i) => setupPane(`${t.agent}:${i}`, t.agent, t.task));
+				const totalPanes = params.tasks!.length;
+				const logFnsList = params.tasks!.map((t, i) => setupPane(`${t.agent}:${i}`, t.agent, t.task, totalPanes, i));
+				const startMs = Date.now();
 
 				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, async (t, i) => {
-					const key = `${t.agent}:${i}`;
-					try {
-						return await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
-					} finally {
-						teardownPane(key, false); // will check failed after
-					}
+					return await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
 				});
 
-				// Finalize panes with error status
+				// Finalize all panes with correct error status
 				for (let i = 0; i < results.length; i++) {
-					if (failed(results[i])) finalizePane(`${results[i].agent}:${i}`, true);
+					finalizePane(`${results[i].agent}:${i}`, failed(results[i]));
 				}
 
 				const ok = results.filter((r) => !failed(r)).length;
+				const elapsed = Date.now() - startMs;
+
+				// Send a single summary notification for the parallel batch
+				pi.sendMessage({
+					customType: "subagent-complete",
+					content: `parallel ${ok}/${results.length} done`,
+					display: true,
+					details: {
+						agent: results.map((r) => r.agent).join(", "),
+						task: `${results.length} parallel tasks`,
+						ok: ok === results.length,
+						durationMs: elapsed,
+						preview: ok === results.length
+							? `All ${results.length} tasks completed`
+							: `${results.length - ok} task${results.length - ok > 1 ? "s" : ""} failed`,
+					} satisfies SubagentCompleteDetails,
+				});
+
 				const text = results.map((r) => `### [${r.agent}] ${failed(r) ? "failed" : "ok"}\n\n${capOutput(output(r))}`).join("\n\n---\n\n");
 				return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} succeeded\n\n${text}` }], details: { results } };
 			}
 
 			// Single mode
 			const logFn = setupPane(params.agent!, params.agent!, params.task!);
+			const startMs = Date.now();
 			try {
 				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, undefined, signal, logFn);
 				const isError = failed(r);
 				teardownPane(params.agent!, isError);
+
+				// Send completion notification
+				pi.sendMessage({
+					customType: "subagent-complete",
+					content: `${params.agent} ${isError ? "failed" : "done"}`,
+					display: true,
+					details: {
+						agent: params.agent!,
+						task: params.task!,
+						ok: !isError,
+						model: r.model,
+						durationMs: Date.now() - startMs,
+						preview: outputPreview(output(r)),
+					} satisfies SubagentCompleteDetails,
+				});
+
 				if (isError) return { content: [{ type: "text", text: `Agent ${r.stopReason || "failed"}: ${capOutput(output(r))}` }], details: { results: [r] }, isError: true };
 				return { content: [{ type: "text", text: capOutput(finalOutput(r.messages) || "(no output)") }], details: { results: [r] } };
 			} catch (e) {
 				teardownPane(params.agent!, true);
+
+				pi.sendMessage({
+					customType: "subagent-complete",
+					content: `${params.agent} crashed`,
+					display: true,
+					details: {
+						agent: params.agent!,
+						task: params.task!,
+						ok: false,
+						durationMs: Date.now() - startMs,
+						preview: e instanceof Error ? e.message : String(e),
+					} satisfies SubagentCompleteDetails,
+				});
+
 				throw e;
 			}
 		},
