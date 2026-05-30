@@ -1,6 +1,5 @@
 {
-  description = "picopi — a batteries-included, contained pi coding agent (web search/fetch, opencode-style undo, todos, slim multi-agent, role/fallback model resolution).";
-
+  description = "picopi — a batteries-included, contained pi coding agent setup";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     systems.url = "github:nix-systems/default";
