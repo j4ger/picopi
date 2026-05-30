@@ -74,12 +74,6 @@ in
 pkgs.writeShellScriptBin "picopi" ''
   set -euo pipefail
 
-  # Auto-launch tmux if not already inside one.
-  if [ -z "''${TMUX:-}" ]; then
-    export PATH="${pkgs.tmux}/bin:$PATH"
-    exec tmux new-session -s picopi -- "$0" "$@"
-  fi
-
   # The config dir holds ONLY user-owned state. Defaults to ~/.config/picopi;
   # relocate with $PICOPI_HOME. picopi source is never copied here.
   dir="''${PICOPI_HOME:-''${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
@@ -91,9 +85,6 @@ pkgs.writeShellScriptBin "picopi" ''
     !bakedConfig
   ) ''[ -e "$dir/config.json" ] || { cp ${resources}/agent/config.json "$dir/config.json"; chmod +w "$dir/config.json"; }''}
   [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
-
-  # tmux for subagent pane visibility
-  export PATH="${pkgs.tmux}/bin:$PATH"
 
   export PI_CODING_AGENT_DIR="$dir"
   ${lib.optionalString bakedConfig ''export PICOPI_CONFIG="${resources}/agent/config.json"''}
