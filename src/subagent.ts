@@ -369,9 +369,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 			const useTmux = isTmux();
 			const logFns = new Map<string, LogFn>();
 
-			const setupPane = (key: string, agentName: string, task: string, totalPanes: number = 1, paneIndex: number = 0) => {
+			const setupPane = (key: string, agentName: string, task: string, totalPanes: number = 1) => {
 				if (!useTmux) return () => {};
-				const fn = createPane(key, task, totalPanes, paneIndex);
+				const fn = createPane(key, task, totalPanes);
 				logFns.set(key, fn);
 				return fn;
 			};
@@ -392,13 +392,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const startMs = Date.now();
 
 				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, async (t, i) => {
-					return await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
+					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
+					// Finalize pane as soon as this agent completes
+					finalizePane(`${t.agent}:${i}`, failed(result));
+					return result;
 				});
-
-				// Finalize all panes with correct error status
-				for (let i = 0; i < results.length; i++) {
-					finalizePane(`${results[i].agent}:${i}`, failed(results[i]));
-				}
 
 				const ok = results.filter((r) => !failed(r)).length;
 				const elapsed = Date.now() - startMs;

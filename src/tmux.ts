@@ -10,7 +10,7 @@
  * which would inject keystrokes into pi's stdin and corrupt the editor.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -31,14 +31,14 @@ export function isTmux(): boolean {
 	return Boolean(process.env.TMUX);
 }
 
-/** Run a tmux command and return stdout. */
+/** Run a tmux command and return stdout. Uses execFileSync to avoid shell injection. */
 function tmux(...args: string[]): string {
-	return execSync(`tmux ${args.join(" ")}`, { encoding: "utf-8" }).trim();
+	return execFileSync("tmux", args, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 }).trim();
 }
 
 /** Get the current pane ID. */
 function currentPane(): string {
-	return tmux("display-message", "-p", "'#{pane_id}'");
+	return tmux("display-message", "-p", "#{pane_id}");
 }
 
 /**
@@ -58,7 +58,7 @@ function notify(msg: string): void {
  */
 function getWindowHeight(): number {
 	try {
-		return parseInt(tmux("display-message", "-p", "'#{window_height}'"), 10);
+		return parseInt(tmux("display-message", "-p", "#{window_height}"), 10);
 	} catch {
 		return 40; // fallback
 	}
@@ -72,6 +72,7 @@ function calculatePaneRows(totalPanes: number): number {
 	const windowHeight = getWindowHeight();
 	const borders = totalPanes - 1; // N-1 borders between N panes
 	const usableHeight = windowHeight - borders;
+	// Use smaller fallback to avoid oversized panes on small terminals
 	return Math.max(1, Math.floor(usableHeight / totalPanes));
 }
 
@@ -81,16 +82,13 @@ function calculatePaneRows(totalPanes: number): number {
  * @param key Unique identifier for this pane (e.g. "web-searcher:0").
  * @param task Short task description shown in the pane header.
  * @param totalPanes Total number of panes to create (for even vertical splitting).
- * @param paneIndex Index of this pane (0-based) for calculating split percentage.
  */
-export function createPane(key: string, task: string, totalPanes: number = 1, paneIndex: number = 0): LogFn {
+export function createPane(key: string, task: string, totalPanes: number = 1): LogFn {
 	if (!isTmux()) return () => {};
 
 	// Clean up any existing pane with the same key
-	const existing = panes.get(key);
-	if (existing) {
-		killPane(existing.id);
-		panes.delete(key);
+	if (panes.has(key)) {
+		cleanupPane(key);
 	}
 
 	// Create temp log file
@@ -121,15 +119,18 @@ export function createPane(key: string, task: string, totalPanes: number = 1, pa
 		splitArgs = ["-v", "-l", `${rows}`, "-t", rightColumnPane!];
 	}
 
+	// Wrap command in sh -c to prevent tmux from interpreting -f etc. as its own flags
+	// Escape single quotes in logFile path for safety
+	const escapedLogFile = logFile.replace(/'/g, "'\''");
 	const paneId = tmux(
 		"split-window",
 		...splitArgs,
-		"-P", "-F", "'#{pane_id}'",
-		`"tail -f '${logFile}'"`,
+		"-P", "-F", "#{pane_id}",
+		"sh", "-c", `tail -f '${escapedLogFile}'`,
 	);
 
-	// Clean up the pane ID (remove quotes)
-	const cleanId = paneId.replace(/'/g, "");
+	// Pane ID from tmux is already clean (e.g. "%5")
+	const cleanId = paneId;
 
 	if (isFirst) {
 		rightColumnPane = cleanId;

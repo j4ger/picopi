@@ -3,8 +3,20 @@
   "version": "0.1.0",
   "description": "A batteries-included pi agent: web access, opencode-style undo, todos, slim multi-agent, and role/fallback model resolution — packaged with Nix.",
   "keywords": ["pi-package", "pi", "coding-agent"],
+  "author": "j4ger",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/j4ger/picopi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/j4ger/picopi/issues"
+  },
+  "homepage": "https://github.com/j4ger/picopi#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "pi": {
     "extensions": ["./src"],
     "agents": ["./agent/agents"],
