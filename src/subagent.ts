@@ -408,7 +408,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						details: { completed, total: totalPanes },
 					});
 
-					// Send individual result immediately so the orchestrator can start processing
+					// Queue individual result as a steer (delivered after current turn)
 					pi.sendMessage({
 						customType: "subagent-complete",
 						content: `${t.agent} ${isError ? "failed" : "done"}`,
@@ -421,7 +421,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							durationMs,
 							preview,
 						} satisfies SubagentCompleteDetails,
-					}, { deliverAs: "steer", triggerTurn: true });
+					}, { deliverAs: "steer" });
 
 					return result;
 				});
