@@ -1,19 +1,12 @@
 /**
- * picopi subagents — oh-my-opencode-slim style.
+ * picopi subagents — specialist agents with status panel overlay.
  *
- * A minimal set of specialist agents (planner, explorer, fixer, auditor,
- * web-searcher) defined as markdown files in `agents/`. Each agent's MODEL and
- * THINKING level come from the central config.json `agents` map (feature #5),
- * resolved through the same alias -> fallback chain as the orchestrator. The
- * markdown frontmatter only carries the prompt, description, and tool list, so
- * model policy stays centralized.
+ * Agents: planner, explorer, fixer, auditor, web-searcher (markdown files).
+ * Models/thinking from central config.json `agents` map.
+ * Spawns isolated `pi` processes (JSON mode, no session).
  *
- * Each invocation spawns an isolated `pi` process (JSON mode, no session) so
- * subagent context never pollutes the main conversation.
- *
- * Modes:
- *   single   { agent, task }
- *   parallel { tasks: [{agent, task}] }
+ * Modes: single {agent, task}, parallel {tasks: [{agent, task}]}
+ * Features: status panel overlay, watchdog timer for stuck detection.
  */
 
 import { spawn } from "node:child_process";
@@ -23,21 +16,21 @@ import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig, roleModelPattern } from "./config.ts";
-import { type LogFn, createPane, finalizePane, isTmux } from "./tmux.ts";
+
+// Constants
 
 const MAX_PARALLEL = 6;
 const MAX_CONCURRENCY = 3;
-const PER_CHILD_OUTPUT_CAP = 50 * 1024; // bytes of model-visible output per child
-// Depth guard: subagents inherit PI_CODING_AGENT_DIR, so a child pi reloads
-// picopi (including this tool). Cap nesting to avoid runaway spawning.
+const PER_CHILD_OUTPUT_CAP = 50 * 1024;
 const MAX_DEPTH = 2;
 const DEPTH_ENV = "PICOPI_SUBAGENT_DEPTH";
+const DEFAULT_TIMEOUT = 120; // seconds
+const WATCHDOG_INTERVAL = 5000; // ms
 
-// Sane tool defaults per agent role. Omitted from agent markdown or config →
-// falls back here. Order: config.json > agent markdown > built-in defaults.
+// Tool defaults per agent role (config.json > markdown > these)
 const BUILT_IN_DEFAULTS: Record<string, string[]> = {
 	planner: ["read", "grep", "find", "ls"],
 	explorer: ["read", "grep", "find", "ls", "bash"],
@@ -46,49 +39,13 @@ const BUILT_IN_DEFAULTS: Record<string, string[]> = {
 	"web-searcher": ["web_search", "fetch_content", "read"],
 };
 
+// Types
+
 interface AgentDef {
 	name: string;
 	description: string;
 	tools?: string[];
 	systemPrompt: string;
-}
-
-function discoverAgents(): AgentDef[] {
-	const here = import.meta.dirname;
-	const dirs = [
-		path.join(getAgentDir(), "agents"),
-		path.resolve(here, "..", "agents"), // installed agent dir
-		path.resolve(here, "..", "agent", "agents"), // repo layout
-	];
-	const seen = new Map<string, AgentDef>();
-	for (const dir of dirs) {
-		let entries: fs.Dirent[];
-		try {
-			entries = fs.readdirSync(dir, { withFileTypes: true });
-		} catch {
-			continue;
-		}
-		for (const e of entries) {
-			if (!e.name.endsWith(".md")) continue;
-			let content: string;
-			try {
-				content = fs.readFileSync(path.join(dir, e.name), "utf-8");
-			} catch {
-				continue;
-			}
-			const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
-			if (!frontmatter.name || !frontmatter.description) continue;
-			if (seen.has(frontmatter.name)) continue; // agent-dir wins over bundled
-			const tools = frontmatter.tools?.split(",").map((t) => t.trim()).filter(Boolean);
-			seen.set(frontmatter.name, {
-				name: frontmatter.name,
-				description: frontmatter.description,
-				tools: tools && tools.length ? tools : undefined,
-				systemPrompt: body,
-			});
-		}
-	}
-	return Array.from(seen.values());
 }
 
 interface RunResult {
@@ -101,7 +58,51 @@ interface RunResult {
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
+	stuck?: boolean;
 }
+
+interface SubagentStatus {
+	id: string;
+	agent: string;
+	task: string;
+	status: "running" | "done" | "failed" | "stuck";
+	progress?: string;
+	currentTool?: string;
+	startTime: number;
+	endTime?: number;
+	lastActivity?: number;
+}
+
+interface SubagentCompleteDetails {
+	agent: string;
+	task: string;
+	ok: boolean;
+	model?: string;
+	durationMs: number;
+	preview: string;
+}
+
+// Global state
+
+const activeSubagents = new Map<string, SubagentStatus>();
+let statusHandle: { hide(): void; setHidden(h: boolean): void; requestRender(): void } | null = null;
+let extensionCtx: any = null;
+let watchdogTimer: NodeJS.Timeout | null = null;
+
+// Helpers
+
+const formatDuration = (ms: number): string => {
+	if (ms < 1000) return `${ms}ms`;
+	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+	const m = Math.floor(ms / 60_000);
+	const s = Math.round((ms % 60_000) / 1000);
+	return `${m}m${s}s`;
+};
+
+const outputPreview = (text: string, maxLen = 120): string => {
+	const first = text.split("\n")[0].trim();
+	return first.length > maxLen ? first.slice(0, maxLen) + "…" : first;
+};
 
 function finalOutput(messages: Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -117,12 +118,188 @@ function capOutput(text: string): string {
 	while (Buffer.byteLength(t, "utf8") > PER_CHILD_OUTPUT_CAP) t = t.slice(0, -1);
 	return `${t}\n\n[output truncated]`;
 }
+
 function failed(r: RunResult): boolean {
-	return r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
+	return r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted" || r.stuck;
 }
+
 function output(r: RunResult): string {
-	return failed(r) ? r.errorMessage || r.stderr || finalOutput(r.messages) || "(no output)" : finalOutput(r.messages) || "(no output)";
+	return r.stuck ? "Provider stopped responding (timeout)" :
+		failed(r) ? r.errorMessage || r.stderr || finalOutput(r.messages) || "(no output)" :
+		finalOutput(r.messages) || "(no output)";
 }
+
+// Watchdog
+
+function startWatchdog() {
+	if (watchdogTimer) return;
+	watchdogTimer = setInterval(() => {
+		const now = Date.now();
+		for (const [id, sub] of activeSubagents) {
+			if (sub.status !== "running") continue;
+			const timeout = (sub as any).timeout || DEFAULT_TIMEOUT;
+			const lastActivity = sub.lastActivity || sub.startTime;
+			if ((now - lastActivity) / 1000 > timeout) {
+				sub.status = "stuck";
+				sub.endTime = now;
+				updateStatusPanel();
+				setTimeout(() => { activeSubagents.delete(id); updateStatusPanel(); }, 8000);
+			}
+		}
+	}, WATCHDOG_INTERVAL);
+}
+
+function stopWatchdog() {
+	if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+}
+
+// Status Panel
+
+function updateStatusPanel(context?: any) {
+	if (context) extensionCtx = context;
+	if (!extensionCtx) return;
+
+	if (activeSubagents.size === 0) {
+		statusHandle?.hide();
+		statusHandle = null;
+		stopWatchdog();
+		return;
+	}
+
+	startWatchdog();
+
+	if (!statusHandle) {
+		try {
+			statusHandle = extensionCtx.ui.custom(
+				(tui: any, theme: any) => {
+					const container = new Container();
+					const render = () => {
+						container.clear();
+						container.addChild(new Text(theme.fg("accent", "── Subagents ──"), 0, 0));
+						container.addChild(new Spacer(0));
+
+						const sorted = [...activeSubagents.values()].sort((a, b) =>
+							a.status === b.status ? a.startTime - b.startTime :
+							a.status === "running" ? -1 : b.status === "running" ? 1 :
+							a.status === "stuck" ? -1 : 1
+						);
+
+						for (const sub of sorted) {
+							const icon = sub.status === "running" ? "⏳" : sub.status === "done" ? "✅" : sub.status === "stuck" ? "⚠️" : "❌";
+							const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
+							const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
+
+							container.addChild(new Text(
+								theme.fg(color, `${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
+								1, 0
+							));
+
+							if (sub.status === "stuck") {
+								container.addChild(new Text(theme.fg("warning", "   ⚠ timeout"), 0, 0));
+							} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
+								container.addChild(new Text(theme.fg("dim", `   ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 0, 0));
+							}
+						}
+
+						const running = [...activeSubagents.values()].filter(s => s.status === "running").length;
+						const stuck = [...activeSubagents.values()].filter(s => s.status === "stuck").length;
+						if (running || stuck) {
+							container.addChild(new Spacer(0));
+							const parts: string[] = [];
+							if (running) parts.push(`${running} active`);
+							if (stuck) parts.push(`${stuck} stuck`);
+							container.addChild(new Text(theme.fg(stuck ? "warning" : "muted", parts.join(", ")), 1, 0));
+						}
+					};
+
+					render();
+					const interval = setInterval(() => { render(); tui.requestRender(); }, 1000);
+					return {
+						render: (w: number) => container.render(w),
+						invalidate: () => container.invalidate(),
+						handleInput: () => {},
+						dispose: () => clearInterval(interval),
+					};
+				},
+				{
+					overlay: true,
+					overlayOptions: { anchor: "right-center", width: 28, maxHeight: "90%", margin: { right: 1 }, nonCapturing: true },
+					onHandle: (h: any) => { statusHandle = h; },
+				}
+			);
+		} catch { /* overlay failed */ }
+	}
+	statusHandle?.requestRender();
+}
+
+const trackAgent = (id: string, agent: string, task: string, timeout?: number) => {
+	const now = Date.now();
+	const sub: SubagentStatus = { id, agent, task, status: "running", startTime: now, lastActivity: now };
+	if (timeout) (sub as any).timeout = timeout;
+	activeSubagents.set(id, sub);
+	updateStatusPanel();
+};
+
+const trackProgress = (id: string, progress?: string, tool?: string) => {
+	const sub = activeSubagents.get(id);
+	if (!sub) return;
+	if (progress) sub.progress = progress;
+	if (tool) sub.currentTool = tool;
+	sub.lastActivity = Date.now();
+	updateStatusPanel();
+};
+
+const trackComplete = (id: string, success: boolean) => {
+	const sub = activeSubagents.get(id);
+	if (!sub) return;
+	sub.status = success ? "done" : "failed";
+	sub.endTime = Date.now();
+	updateStatusPanel();
+	setTimeout(() => { activeSubagents.delete(id); updateStatusPanel(); }, success ? 3000 : 5000);
+};
+
+const trackStuck = (id: string) => {
+	const sub = activeSubagents.get(id);
+	if (!sub) return;
+	sub.status = "stuck";
+	sub.endTime = Date.now();
+	updateStatusPanel();
+	setTimeout(() => { activeSubagents.delete(id); updateStatusPanel(); }, 8000);
+};
+
+// Agent Discovery
+
+function discoverAgents(): AgentDef[] {
+	const here = import.meta.dirname;
+	const dirs = [
+		path.join(getAgentDir(), "agents"),
+		path.resolve(here, "..", "agents"),
+		path.resolve(here, "..", "agent", "agents"),
+	];
+	const seen = new Map<string, AgentDef>();
+	for (const dir of dirs) {
+		let entries: fs.Dirent[];
+		try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+		for (const e of entries) {
+			if (!e.name.endsWith(".md")) continue;
+			let content: string;
+			try { content = fs.readFileSync(path.join(dir, e.name), "utf-8"); } catch { continue; }
+			const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
+			if (!frontmatter.name || !frontmatter.description) continue;
+			if (seen.has(frontmatter.name)) continue;
+			const tools = frontmatter.tools?.split(",").map((t) => t.trim()).filter(Boolean);
+			seen.set(frontmatter.name, {
+				name: frontmatter.name,
+				description: frontmatter.description,
+				tools: tools && tools.length ? tools : undefined,
+				systemPrompt: body,
+			});
+		}
+	}
+	return Array.from(seen.values());
+}
+
+// Runner
 
 function piInvocation(args: string[]): { command: string; args: string[] } {
 	const script = process.argv[1];
@@ -133,7 +310,6 @@ function piInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
-/** Resolve tools: config.json > agent markdown > built-in defaults. */
 function resolveTools(agent: AgentDef, role?: { tools?: string[] }): string[] {
 	if (role?.tools?.length) return role.tools;
 	if (agent.tools?.length) return agent.tools;
@@ -145,15 +321,15 @@ async function runAgent(
 	agents: AgentDef[],
 	name: string,
 	task: string,
-	step: number | undefined,
 	signal: AbortSignal | undefined,
-	logFn?: LogFn,
+	statusId: string,
+	timeout?: number,
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === name);
-	const base: RunResult = { agent: name, task, exitCode: 0, messages: [], stderr: "", step };
+	const base: RunResult = { agent: name, task, exitCode: 0, messages: [], stderr: "" };
 	if (!agent) {
-		const avail = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-		return { ...base, exitCode: 1, stderr: `Unknown agent "${name}". Available: ${avail}.` };
+		trackComplete(statusId, false);
+		return { ...base, exitCode: 1, stderr: `Unknown agent "${name}". Available: ${agents.map((a) => `"${a.name}"`).join(", ") || "none"}.` };
 	}
 
 	const cfg = loadConfig();
@@ -166,12 +342,13 @@ async function runAgent(
 		if (role.thinking) args.push("--thinking", role.thinking);
 	}
 	args.push("--tools", tools.join(","));
-	// Pass extension path so child pi loads picopi (registers web_search, fetch_content, etc.)
 	args.push("--extension", import.meta.dirname);
-	const timeoutMs = role?.timeout && role.timeout > 0 ? role.timeout * 1000 : undefined;
 
+	const effectiveTimeout = timeout || role?.timeout || DEFAULT_TIMEOUT;
 	let promptDir: string | null = null;
 	let promptPath: string | null = null;
+	let watchdogId: NodeJS.Timeout | null = null;
+
 	try {
 		if (agent.systemPrompt.trim()) {
 			promptDir = fs.mkdtempSync(path.join(os.tmpdir(), "picopi-agent-"));
@@ -182,7 +359,9 @@ async function runAgent(
 		args.push(`Task: ${task}`);
 
 		let aborted = false;
-		let timedOut = false;
+		let stuck = false;
+		let lastEventTime = Date.now();
+
 		const code = await new Promise<number>((resolve) => {
 			const inv = piInvocation(args);
 			const childDepth = Number(process.env[DEPTH_ENV] ?? "0") + 1;
@@ -193,23 +372,29 @@ async function runAgent(
 				env: { ...process.env, [DEPTH_ENV]: String(childDepth) },
 			});
 			let buf = "";
-			let timer: ReturnType<typeof setTimeout> | undefined;
-			const killTree = () => {
-				proc.kill("SIGTERM");
-				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000);
-			};
-			if (timeoutMs) timer = setTimeout(() => {
-				timedOut = true;
-				killTree();
-			}, timeoutMs);
+
+			// Per-process watchdog
+			watchdogId = setInterval(() => {
+				if (Date.now() - lastEventTime > effectiveTimeout * 1000) {
+					stuck = true;
+					trackStuck(statusId);
+					proc.kill("SIGTERM");
+					setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000);
+				}
+			}, WATCHDOG_INTERVAL);
+
 			const onLine = (line: string) => {
 				if (!line.trim()) return;
 				let ev: any;
-				try {
-					ev = JSON.parse(line);
-				} catch {
-					return;
+				try { ev = JSON.parse(line); } catch { return; }
+
+				// Any event means process is alive
+				lastEventTime = Date.now();
+
+				if (ev.type === "tool_execution_start") {
+					trackProgress(statusId, undefined, ev.toolName);
 				}
+
 				if ((ev.type === "message_end" || ev.type === "tool_result_end") && ev.message) {
 					const msg = ev.message as Message;
 					base.messages.push(msg);
@@ -217,58 +402,39 @@ async function runAgent(
 						if (!base.model && msg.model) base.model = msg.model;
 						if (msg.stopReason) base.stopReason = msg.stopReason;
 						if (msg.errorMessage) base.errorMessage = msg.errorMessage;
-						// Log text output
-						for (const p of msg.content) {
-							if (p.type === "text" && p.text.trim()) logFn?.(p.text.trim());
-						}
 					}
-					if (msg.role === "toolResult") {
-						for (const p of msg.content) {
-							if (p.type === "text" && p.text.trim()) logFn?.(`  → ${p.text.trim().split("\n")[0]}`);
-						}
-					}
+					trackProgress(statusId, `${base.messages.filter(m => m.role === "assistant").length} turns`);
 				}
 			};
+
 			proc.stdout.on("data", (d) => {
 				buf += d.toString();
 				const lines = buf.split("\n");
 				buf = lines.pop() || "";
 				for (const l of lines) onLine(l);
 			});
-			proc.stderr.on("data", (d) => {
-				base.stderr += d.toString();
-			});
-			proc.on("close", (c) => {
-				if (timer) clearTimeout(timer);
-				if (buf.trim()) onLine(buf);
-				resolve(c ?? 0);
-			});
-			proc.on("error", () => {
-				if (timer) clearTimeout(timer);
-				resolve(1);
-			});
+			proc.stderr.on("data", (d) => { base.stderr += d.toString(); });
+			proc.on("close", (c) => { if (buf.trim()) onLine(buf); resolve(c ?? 0); });
+			proc.on("error", () => resolve(1));
+
 			if (signal) {
-				const kill = () => {
-					aborted = true;
-					killTree();
-				};
+				const kill = () => { aborted = true; proc.kill("SIGTERM"); setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000); };
 				signal.aborted ? kill() : signal.addEventListener("abort", kill, { once: true });
 			}
 		});
+
+		if (watchdogId) clearInterval(watchdogId);
 		base.exitCode = code;
-		if (timedOut) {
-			base.stopReason = "error";
-			if (!base.errorMessage) base.errorMessage = `Subagent timed out after ${(timeoutMs ?? 0) / 1000}s`;
-		} else if (aborted) {
-			base.stopReason = "aborted";
-		}
+		base.stuck = stuck;
+		if (aborted) base.stopReason = "aborted";
+		trackComplete(statusId, !failed(base));
 		return base;
+	} catch (e) {
+		if (watchdogId) clearInterval(watchdogId);
+		trackComplete(statusId, false);
+		throw e;
 	} finally {
-		try {
-			if (promptDir) fs.rmSync(promptDir, { recursive: true, force: true });
-		} catch {
-			/* ignore */
-		}
+		try { if (promptDir) fs.rmSync(promptDir, { recursive: true, force: true }); } catch {}
 	}
 }
 
@@ -286,6 +452,8 @@ async function mapLimit<I, O>(items: I[], limit: number, fn: (i: I, idx: number)
 	return out;
 }
 
+// Schema
+
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Agent name" }),
 	task: Type.String({ description: "Task for the agent" }),
@@ -294,44 +462,24 @@ const Params = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task (single mode)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task}" })),
+	timeout: Type.Optional(Type.Number({ description: `Watchdog timeout in seconds (default: ${DEFAULT_TIMEOUT})` })),
 });
 
-interface SubagentCompleteDetails {
-	agent: string;
-	task: string;
-	ok: boolean;
-	model?: string;
-	durationMs: number;
-	preview: string;
-}
-
-function formatDuration(ms: number): string {
-	if (ms < 1000) return `${ms}ms`;
-	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-	const m = Math.floor(ms / 60_000);
-	const s = Math.round((ms % 60_000) / 1000);
-	return `${m}m${s}s`;
-}
-
-function outputPreview(text: string, maxLen = 120): string {
-	const first = text.split("\n")[0].trim();
-	return first.length > maxLen ? first.slice(0, maxLen) + "…" : first;
-}
+// Extension
 
 export function setupSubagent(pi: ExtensionAPI) {
-	// Register message renderer for subagent completion notifications
+	pi.on("session_start", (_e, ctx) => { extensionCtx = ctx; });
+	pi.on("session_shutdown", () => { activeSubagents.clear(); statusHandle?.hide(); statusHandle = null; stopWatchdog(); });
+
 	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
 		const d = message.details as SubagentCompleteDetails | undefined;
 		if (!d) return new Text(String(message.content), 0, 0);
-
 		const icon = d.ok ? theme.fg("success", "✓") : theme.fg("error", "✗");
 		const agent = theme.bold(theme.fg("accent", d.agent));
 		const dur = theme.fg("dim", formatDuration(d.durationMs));
 		const model = d.model ? theme.fg("dim", ` ${d.model}`) : "";
-
 		let text = `${icon} ${agent}${model} ${dur}`;
 		if (d.preview) text += `\n${theme.fg("dim", d.preview)}`;
-
 		return new Text(text, 1, 0);
 	});
 
@@ -341,22 +489,25 @@ export function setupSubagent(pi: ExtensionAPI) {
 		description: [
 			"Delegate to a specialist subagent with an isolated context window.",
 			"Agents: planner, explorer, fixer, auditor, web-searcher (see agents/ dir).",
-			"Models/thinking come from central config.json. Modes: single {agent,task}, parallel {tasks}.",
+			"Models/thinking from central config.json. Modes: single {agent,task}, parallel {tasks}.",
+			"Includes watchdog timeout detection for stuck providers.",
 		].join(" "),
 		parameters: Params,
 		promptSnippet: "Delegate scoped work to specialist subagents (planner/explorer/fixer/auditor/web-searcher)",
 		promptGuidelines: [
 			"Use the subagent tool to offload exploration, planning, fixing, auditing, or web research so the main context stays focused.",
 		],
+
 		async execute(_id, params, signal, onUpdate, ctx) {
+			extensionCtx = ctx;
 			const depth = Number(process.env[DEPTH_ENV] ?? "0");
 			if (depth >= MAX_DEPTH) {
 				return {
-					content: [{ type: "text", text: `Subagent nesting limit reached (depth ${depth}); refusing to spawn more.` }],
-					details: { results: [] },
-					isError: true,
+					content: [{ type: "text", text: `Subagent nesting limit reached (depth ${depth}); refusing to spawn.` }],
+					details: { results: [] }, isError: true,
 				};
 			}
+
 			const agents = discoverAgents();
 			const hasSingle = Boolean(params.agent && params.task);
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -365,61 +516,41 @@ export function setupSubagent(pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: `Provide exactly one mode.\nAvailable agents:\n${avail}` }], details: { results: [] } };
 			}
 
-			// tmux: create pane(s) for visibility
-			const useTmux = isTmux();
-			const logFns = new Map<string, LogFn>();
+			const timeout = params.timeout;
 
-			const setupPane = (key: string, agentName: string, task: string, totalPanes: number = 1) => {
-				if (!useTmux) return () => {};
-				const fn = createPane(key, task, totalPanes);
-				logFns.set(key, fn);
-				return fn;
-			};
-
-			const teardownPane = (key: string, isError: boolean) => {
-				if (!useTmux) return;
-				finalizePane(key, isError);
-				logFns.delete(key);
-			};
-
+			// Parallel mode
 			if (hasTasks) {
-				if (params.tasks!.length > MAX_PARALLEL)
+				if (params.tasks!.length > MAX_PARALLEL) {
 					return { content: [{ type: "text", text: `Too many tasks (max ${MAX_PARALLEL})` }], details: { results: [] } };
+				}
 
-				// Create panes for all parallel tasks with unique keys
 				const totalPanes = params.tasks!.length;
-				const logFnsList = params.tasks!.map((t, i) => setupPane(`${t.agent}:${i}`, t.agent, t.task, totalPanes));
-				const startMs = Date.now();
+				const sids = params.tasks!.map((t, i) => {
+					const sid = `par-${i}-${Date.now()}`;
+					trackAgent(sid, t.agent, t.task, timeout);
+					return sid;
+				});
+
 				let completed = 0;
+				const startMs = Date.now();
 
 				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, async (t, i) => {
-					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
-					// Finalize pane as soon as this agent completes
-					finalizePane(`${t.agent}:${i}`, failed(result));
-
+					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout);
 					completed++;
-					const isError = failed(result);
-					const preview = outputPreview(output(result));
-					const durationMs = Date.now() - startMs;
 
-					// Stream progress update to the tool call UI
 					onUpdate?.({
-						content: [{ type: "text", text: `${completed}/${totalPanes} done — ${t.agent} ${isError ? "failed" : "ok"}` }],
+						content: [{ type: "text", text: `${completed}/${totalPanes} done — ${t.agent} ${failed(result) ? "failed" : "ok"}` }],
 						details: { completed, total: totalPanes },
 					});
 
-					// Queue individual result as a steer (delivered after current turn)
 					pi.sendMessage({
 						customType: "subagent-complete",
-						content: `${t.agent} ${isError ? "failed" : "done"}`,
+						content: `${t.agent} ${failed(result) ? "failed" : "done"}`,
 						display: true,
 						details: {
-							agent: t.agent,
-							task: t.task,
-							ok: !isError,
-							model: result.model,
-							durationMs,
-							preview,
+							agent: t.agent, task: t.task, ok: !failed(result),
+							model: result.model, durationMs: Date.now() - startMs,
+							preview: outputPreview(output(result)),
 						} satisfies SubagentCompleteDetails,
 					}, { deliverAs: "steer" });
 
@@ -427,77 +558,72 @@ export function setupSubagent(pi: ExtensionAPI) {
 				});
 
 				const ok = results.filter((r) => !failed(r)).length;
+				const stuckCount = results.filter(r => r.stuck).length;
 				const elapsed = Date.now() - startMs;
+				const summary = stuckCount > 0 ? `${ok} ok, ${stuckCount} timeout` : `${ok}/${results.length} ok`;
 
-				// Send final summary notification
 				pi.sendMessage({
 					customType: "subagent-complete",
-					content: `parallel ${ok}/${results.length} done`,
+					content: `parallel ${summary}`,
 					display: true,
 					details: {
 						agent: results.map((r) => r.agent).join(", "),
 						task: `${results.length} parallel tasks`,
-						ok: ok === results.length,
-						durationMs: elapsed,
-						preview: ok === results.length
-							? `All ${results.length} tasks completed`
-							: `${results.length - ok} task${results.length - ok > 1 ? "s" : ""} failed`,
+						ok: ok === results.length, durationMs: elapsed,
+						preview: ok === results.length ? `All ${results.length} tasks completed` : `${results.length - ok} failed`,
 					} satisfies SubagentCompleteDetails,
 				});
 
-				const text = results.map((r) => `### [${r.agent}] ${failed(r) ? "failed" : "ok"}\n\n${capOutput(output(r))}`).join("\n\n---\n\n");
-				return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} succeeded\n\n${text}` }], details: { results } };
+				const text = results.map((r) => `### [${r.agent}] ${r.stuck ? "timeout" : failed(r) ? "failed" : "ok"}\n\n${capOutput(output(r))}`).join("\n\n---\n\n");
+				return { content: [{ type: "text", text: `Parallel: ${summary}\n\n${text}` }], details: { results } };
 			}
 
 			// Single mode
-			const logFn = setupPane(params.agent!, params.agent!, params.task!);
+			const sid = `single-${Date.now()}`;
+			trackAgent(sid, params.agent!, params.task!, timeout);
 			const startMs = Date.now();
-			try {
-				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, undefined, signal, logFn);
-				const isError = failed(r);
-				teardownPane(params.agent!, isError);
 
-				// Send completion notification
+			try {
+				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, signal, sid, timeout);
+				const isError = failed(r);
+
 				pi.sendMessage({
 					customType: "subagent-complete",
-					content: `${params.agent} ${isError ? "failed" : "done"}`,
+					content: `${params.agent} ${r.stuck ? "timeout" : isError ? "failed" : "done"}`,
 					display: true,
 					details: {
-						agent: params.agent!,
-						task: params.task!,
-						ok: !isError,
-						model: r.model,
-						durationMs: Date.now() - startMs,
+						agent: params.agent!, task: params.task!, ok: !isError,
+						model: r.model, durationMs: Date.now() - startMs,
 						preview: outputPreview(output(r)),
 					} satisfies SubagentCompleteDetails,
 				});
 
-				if (isError) return { content: [{ type: "text", text: `Agent ${r.stopReason || "failed"}: ${capOutput(output(r))}` }], details: { results: [r] }, isError: true };
+				if (isError) {
+					const reason = r.stuck ? "timeout: provider stopped responding" : `${r.stopReason || "failed"}: ${capOutput(output(r))}`;
+					return { content: [{ type: "text", text: reason }], details: { results: [r] }, isError: true };
+				}
 				return { content: [{ type: "text", text: capOutput(finalOutput(r.messages) || "(no output)") }], details: { results: [r] } };
 			} catch (e) {
-				teardownPane(params.agent!, true);
-
 				pi.sendMessage({
 					customType: "subagent-complete",
 					content: `${params.agent} crashed`,
 					display: true,
 					details: {
-						agent: params.agent!,
-						task: params.task!,
-						ok: false,
+						agent: params.agent!, task: params.task!, ok: false,
 						durationMs: Date.now() - startMs,
 						preview: e instanceof Error ? e.message : String(e),
 					} satisfies SubagentCompleteDetails,
 				});
-
 				throw e;
 			}
 		},
+
 		renderCall(args, theme) {
 			if (args.tasks?.length) return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `parallel (${args.tasks.length})`), 0, 0);
 			const preview = args.task ? (args.task.length > 60 ? args.task.slice(0, 60) + "…" : args.task) : "…";
 			return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", args.agent || "…") + `\n  ${theme.fg("dim", preview)}`, 0, 0);
 		},
+
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as { results: RunResult[] } | undefined;
 			if (!details?.results.length) {
@@ -507,16 +633,14 @@ export function setupSubagent(pi: ExtensionAPI) {
 			const md = getMarkdownTheme();
 			const c = new Container();
 			for (const r of details.results) {
-				const icon = failed(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
+				const icon = r.stuck ? theme.fg("warning", "⚠") : failed(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const head = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${r.model ? theme.fg("dim", ` ${r.model}`) : ""}`;
 				c.addChild(new Text(head, 0, 0));
+				if (r.stuck) c.addChild(new Text(theme.fg("warning", "Provider stopped responding (timeout)"), 0, 0));
 				if (expanded) {
 					c.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
 					const out = finalOutput(r.messages) || output(r);
-					if (out) {
-						c.addChild(new Spacer(1));
-						c.addChild(new Markdown(out.trim(), 0, 0, md));
-					}
+					if (out) { c.addChild(new Spacer(1)); c.addChild(new Markdown(out.trim(), 0, 0, md)); }
 				} else {
 					const out = (finalOutput(r.messages) || output(r)).split("\n").slice(0, 4).join("\n");
 					c.addChild(new Text(theme.fg("toolOutput", out), 0, 0));
