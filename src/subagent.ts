@@ -348,7 +348,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use the subagent tool to offload exploration, planning, fixing, auditing, or web research so the main context stays focused.",
 		],
-		async execute(_id, params, signal, _onUpdate, ctx) {
+		async execute(_id, params, signal, onUpdate, ctx) {
 			const depth = Number(process.env[DEPTH_ENV] ?? "0");
 			if (depth >= MAX_DEPTH) {
 				return {
@@ -388,20 +388,48 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 				// Create panes for all parallel tasks with unique keys
 				const totalPanes = params.tasks!.length;
-				const logFnsList = params.tasks!.map((t, i) => setupPane(`${t.agent}:${i}`, t.agent, t.task, totalPanes, i));
+				const logFnsList = params.tasks!.map((t, i) => setupPane(`${t.agent}:${i}`, t.agent, t.task, totalPanes));
 				const startMs = Date.now();
+				let completed = 0;
 
 				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, async (t, i) => {
 					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, undefined, signal, logFnsList[i]);
 					// Finalize pane as soon as this agent completes
 					finalizePane(`${t.agent}:${i}`, failed(result));
+
+					completed++;
+					const isError = failed(result);
+					const preview = outputPreview(output(result));
+					const durationMs = Date.now() - startMs;
+
+					// Stream progress update to the tool call UI
+					onUpdate?.({
+						content: [{ type: "text", text: `${completed}/${totalPanes} done — ${t.agent} ${isError ? "failed" : "ok"}` }],
+						details: { completed, total: totalPanes },
+					});
+
+					// Send individual result immediately so the orchestrator can start processing
+					pi.sendMessage({
+						customType: "subagent-complete",
+						content: `${t.agent} ${isError ? "failed" : "done"}`,
+						display: true,
+						details: {
+							agent: t.agent,
+							task: t.task,
+							ok: !isError,
+							model: result.model,
+							durationMs,
+							preview,
+						} satisfies SubagentCompleteDetails,
+					}, { deliverAs: "steer", triggerTurn: true });
+
 					return result;
 				});
 
 				const ok = results.filter((r) => !failed(r)).length;
 				const elapsed = Date.now() - startMs;
 
-				// Send a single summary notification for the parallel batch
+				// Send final summary notification
 				pi.sendMessage({
 					customType: "subagent-complete",
 					content: `parallel ${ok}/${results.length} done`,
