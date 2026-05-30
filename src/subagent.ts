@@ -85,7 +85,7 @@ interface SubagentCompleteDetails {
 // Global state
 
 const activeSubagents = new Map<string, SubagentStatus>();
-let statusHandle: { hide(): void; setHidden(h: boolean): void; requestRender(): void } | null = null;
+let statusHandle: { hide(): void; setHidden(h: boolean): void } | null = null;
 let extensionCtx: any = null;
 let watchdogTimer: NodeJS.Timeout | null = null;
 
@@ -229,7 +229,6 @@ function updateStatusPanel(context?: any) {
 			);
 		} catch { /* overlay failed */ }
 	}
-	statusHandle?.requestRender();
 }
 
 const trackAgent = (id: string, agent: string, task: string, timeout?: number) => {
