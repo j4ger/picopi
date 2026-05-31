@@ -19,7 +19,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-interface RoleConfig {
+export interface RoleConfig {
 	model: string;
 	thinking?: ThinkingLevel;
 	timeout?: number;
@@ -117,7 +117,126 @@ export async function resolveRoleModel(
 	return null;
 }
 
-/** Comma-separated `--model` pattern so a spawned pi does the fallback walk itself. */
+/** Comma-separated `--model` pattern so a spawned pi does the fallback walk itself.
+ *  @deprecated Use `resolveModelForSpawn` instead — comma-separated chains are
+ *  not understood by pi's `--model` flag. */
 export function roleModelPattern(cfg: PicopiConfig, alias: string): string {
 	return resolveChain(cfg, alias).join(",");
+}
+
+// ── Models.json resolution ────────────────────────────────────────────────────
+
+interface ModelsJson {
+	providers?: Record<string, {
+		apiKey?: string;
+		models?: { id: string }[];
+	}>;
+}
+
+let modelsCache: { file: string; mtime: number; data: ModelsJson } | null = null;
+
+/** Load models.json from the agent dir (same location pi uses). */
+function loadModelsJson(): ModelsJson {
+	try {
+		const agentDir = getAgentDir();
+		const p = path.join(agentDir, "models.json");
+		const { mtimeMs } = fs.statSync(p);
+		if (modelsCache?.file === p && modelsCache.mtime === mtimeMs) return modelsCache.data;
+		const data = JSON.parse(fs.readFileSync(p, "utf-8")) as ModelsJson;
+		modelsCache = { file: p, mtime: mtimeMs, data };
+		return data;
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * Resolve the first model from an alias chain that exists in models.json and
+ * has an API key configured.  Returns the `provider/modelId` spec or null.
+ *
+ * This replaces the broken `roleModelPattern` approach for spawned pi
+ * processes (pi does NOT support comma-separated fallback chains).
+ */
+export function resolveModelForSpawn(cfg: PicopiConfig, alias: string): string | null {
+	const chain = resolveChain(cfg, alias);
+	const mj = loadModelsJson();
+	for (const spec of chain) {
+		const slash = spec.indexOf("/");
+		if (slash <= 0) continue;
+		const provider = spec.slice(0, slash);
+		const modelId = spec.slice(slash + 1);
+		const prov = mj.providers?.[provider];
+		if (!prov) continue;
+		// Check the model exists in the provider's model list
+		const hasModel = prov.models?.some((m) => m.id === modelId) ?? false;
+		if (!hasModel) continue;
+		// Check the provider has an API key
+		if (!prov.apiKey) continue;
+		return spec;
+	}
+	return null;
+}
+
+export interface ValidationIssue {
+	spec: string;
+	reason: "not-found" | "no-auth" | "malformed";
+}
+
+export interface RoleValidationResult {
+	role: string;
+	alias: string;
+	ok: boolean;
+	resolved?: string;
+	issues: ValidationIssue[];
+}
+
+export interface ValidationReport {
+	ok: boolean;
+	results: RoleValidationResult[];
+}
+
+/** Validate every configured role model (orchestrator, agents, compaction) by
+ * walking each alias chain and checking registry + auth.  Best-effort: never
+ * throws. */
+export async function validateAllResolutions(
+	registry: ModelRegistryLike,
+	cfg: PicopiConfig,
+): Promise<ValidationReport> {
+	const results: RoleValidationResult[] = [];
+	const roles: { role: string; alias: string }[] = [];
+	if (cfg.orchestrator?.model) roles.push({ role: "orchestrator", alias: cfg.orchestrator.model });
+	for (const [name, r] of Object.entries(cfg.agents ?? {})) {
+		if (r.model) roles.push({ role: `agent:${name}`, alias: r.model });
+	}
+	if (cfg.compaction?.model) roles.push({ role: "compaction", alias: cfg.compaction.model });
+
+	for (const { role, alias } of roles) {
+		const issues: ValidationIssue[] = [];
+		let resolved: string | undefined;
+		for (const spec of resolveChain(cfg, alias)) {
+			const slash = spec.indexOf("/");
+			if (slash <= 0) {
+				issues.push({ spec, reason: "malformed" });
+				continue;
+			}
+			const model = registry.find(spec.slice(0, slash), spec.slice(slash + 1));
+			if (!model) {
+				issues.push({ spec, reason: "not-found" });
+				continue;
+			}
+			try {
+				const auth = await registry.getApiKeyAndHeaders(model);
+				if (auth.ok && (auth.apiKey || auth.headers)) {
+					resolved = spec;
+					break;
+				}
+				issues.push({ spec, reason: "no-auth" });
+			} catch {
+				issues.push({ spec, reason: "no-auth" });
+			}
+		}
+		results.push({ role, alias, ok: !!resolved, resolved, issues });
+	}
+
+	return { ok: results.every((r) => r.ok), results };
 }

@@ -15,10 +15,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, DynamicBorder, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { loadConfig, roleModelPattern } from "./config.ts";
+import { loadConfig, roleModelPattern, resolveChain, resolveModelForSpawn } from "./config.ts";
 
 // Constants
 
@@ -146,11 +146,9 @@ function updateStatusPanel(context?: any) {
 			statusHandle = extensionCtx.ui.custom(
 				(tui: any, theme: any) => {
 					const container = new Container();
-					const borderColor = (s: string) => theme.fg("borderAccent", s);
 
 					const render = () => {
 						container.clear();
-						container.addChild(new DynamicBorder(borderColor));
 						container.addChild(new Text(theme.fg("accent", " Subagents "), 0, 0));
 
 						const sorted = [...activeSubagents.values()].sort((a, b) =>
@@ -170,28 +168,40 @@ function updateStatusPanel(context?: any) {
 							));
 
 							if (sub.status === "stuck") {
-								container.addChild(new Text(theme.fg("warning", "    timeout"), 0, 0));
+								container.addChild(new Text(theme.fg("warning", "    timeout"), 1, 0));
 							} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
-								container.addChild(new Text(theme.fg("dim", `    ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 0, 0));
+								container.addChild(new Text(theme.fg("dim", `    ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 1, 0));
 							}
 						}
 
 						const running = [...activeSubagents.values()].filter(s => s.status === "running").length;
 						const stuck = [...activeSubagents.values()].filter(s => s.status === "stuck").length;
 						if (running || stuck) {
-							container.addChild(new Spacer(0));
+							container.addChild(new Spacer(1));
 							const parts: string[] = [];
 							if (running) parts.push(`${running} active`);
 							if (stuck) parts.push(`${stuck} stuck`);
 							container.addChild(new Text(theme.fg(stuck ? "warning" : "muted", parts.join(", ")), 1, 0));
 						}
-						container.addChild(new DynamicBorder(borderColor));
 					};
 
 					render();
 					const interval = setInterval(() => { render(); tui.requestRender(); }, 1000);
 					return {
-						render: (w: number) => container.render(w),
+						render: (w: number) => {
+							const border = (s: string) => theme.fg("accent", s);
+							const innerW = Math.max(0, w - 2);
+							const hr = "─".repeat(innerW);
+							const out: string[] = [];
+							out.push(border("┌" + hr + "┐"));
+							for (const raw of container.render(innerW)) {
+								const inner = truncateToWidth(raw, innerW);
+								const pad = innerW - visibleWidth(inner);
+								out.push(border("│") + inner + " ".repeat(Math.max(0, pad)) + border("│"));
+							}
+							out.push(border("└" + hr + "┘"));
+							return out;
+						},
 						invalidate: () => container.invalidate(),
 						handleInput: () => {},
 						dispose: () => clearInterval(interval),
@@ -311,8 +321,15 @@ async function runAgent(
 	const tools = resolveTools(agent, role);
 	const args = ["--mode", "json", "-p", "--no-session"];
 	if (role) {
-		const pattern = roleModelPattern(cfg, role.model);
-		if (pattern) args.push("--model", pattern);
+		const spec = resolveModelForSpawn(cfg, role.model);
+		if (spec) {
+			args.push("--model", spec);
+		} else {
+			// No model in the chain matched models.json — pass the first entry
+			// so pi gives a meaningful "model not found" error.
+			const chain = resolveChain(cfg, role.model);
+			if (chain[0]) args.push("--model", chain[0]);
+		}
 		if (role.thinking) args.push("--thinking", role.thinking);
 	}
 	args.push("--tools", tools.join(","));
