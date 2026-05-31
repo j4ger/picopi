@@ -70,6 +70,7 @@ class TodoPanel {
 export function setupTodo(pi: ExtensionAPI) {
 	let todos: Todo[] = [];
 	let nextId = 1;
+	let folded = false;
 
 	const rebuild = (ctx: ExtensionContext) => {
 		todos = [];
@@ -90,20 +91,42 @@ export function setupTodo(pi: ExtensionAPI) {
 
 	const refreshWidget = (ctx: ExtensionContext) => {
 		const open = todos.filter((t) => !t.done);
-		if (open.length === 0) {
+		const done = todos.filter((t) => t.done);
+		if (open.length === 0 && done.length === 0) {
 			ctx.ui.setWidget("picopi-todo", []);
 			return;
 		}
 		const th = ctx.ui.theme;
-		const head = th.fg("accent", `✸ ${open.length} todo${open.length > 1 ? "s" : ""}`);
+		const count = open.length;
+		if (folded) {
+			ctx.ui.setWidget("picopi-todo", [th.fg("muted", `▸ ${count} todo${count !== 1 ? "s" : ""} `) + th.fg("dim", "^I")]);
+			return;
+		}
+		const head = th.fg("accent", `▾ ${count} todo${count !== 1 ? "s" : ""}`) + " " + th.fg("dim", "^I");
 		const clip = (s: string) => (s.length > 60 ? s.slice(0, 57) + "…" : s);
-		const preview = open.slice(0, 3).map((t) => "  " + th.fg("dim", "○ ") + th.fg("muted", clip(t.text)));
-		if (open.length > 3) preview.push(th.fg("dim", `  … +${open.length - 3} more`));
-		ctx.ui.setWidget("picopi-todo", [head, ...preview]);
+		const lines: string[] = [head];
+		for (const t of open) {
+			lines.push("  " + th.fg("dim", "○ ") + th.fg("muted", clip(t.text)));
+		}
+		if (done.length > 0) {
+			lines.push(th.fg("dim", `  ── ${done.length} done ──`));
+			for (const t of done) {
+				lines.push("  " + th.fg("success", "✓ ") + th.fg("dim", clip(t.text)));
+			}
+		}
+		ctx.ui.setWidget("picopi-todo", lines);
 	};
 
 	pi.on("session_start", async (_e, ctx) => rebuild(ctx));
 	pi.on("session_tree", async (_e, ctx) => rebuild(ctx));
+
+	pi.registerShortcut("ctrl+i", {
+		description: "Toggle todo list fold/unfold",
+		handler: async (ctx) => {
+			folded = !folded;
+			refreshWidget(ctx);
+		},
+	});
 
 	pi.registerTool({
 		name: "todo",
