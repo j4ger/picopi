@@ -62,7 +62,7 @@ picopi uses pi's auth. See [pi's provider docs](https://github.com/earendil-work
 
 | Command | Effect |
 |---------|--------|
-| `/picopi` | Show resolved roles, models, config source |
+| `/picopi` | Show config status panel (resolved roles, models, fallback chain, config source). Press Enter or Esc to close. |
 | `/undo` | Rewind one turn (conversation + files) |
 | `/checkpoints` | List workspace checkpoints |
 | `/todos` | Open todo panel |

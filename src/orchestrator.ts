@@ -12,7 +12,7 @@
 import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
-import { type ModelRegistryLike, type PicopiConfig, loadConfig, resolveRoleModel } from "./config.ts";
+import { type ModelRegistryLike, type PicopiConfig, loadConfig, resolveRoleModel, validateAllResolutions } from "./config.ts";
 import { clearPicopiFooterNote, setPicopiFooter } from "./footer.ts";
 
 const COMPACT_TIMEOUT_MS = 120_000;
@@ -60,6 +60,25 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 		const cfg = loadConfig();
 		// Only auto-apply on fresh starts; honour the model restored on resume/fork.
 		if (event.reason === "startup" || event.reason === "new") {
+			// Best-effort validation of all configured model resolutions
+			try {
+				const report = await validateAllResolutions(registry(ctx), cfg);
+				if (!report.ok) {
+					const failures = report.results.filter((r) => !r.ok);
+					const lines = failures.map((f) => {
+						const details = f.issues.map((i) => `${i.spec || f.alias} → ${i.reason}`).join(", ");
+						return `  - ${f.role}: ${details}`;
+					});
+					console.warn(`picopi: ${failures.length} configured model resolution(s) failed:\n${lines.join("\n")}`);
+					if (failures.some((f) => f.role === "orchestrator")) {
+						setPicopiFooter({ role: cfg.orchestrator?.model, note: `${failures.length} role(s) unresolved — run :picopi`, tone: "warning" });
+					} else {
+						ctx.ui.notify(`${failures.length} role model(s) unresolved — run :picopi for details`, "warning");
+					}
+				}
+			} catch {
+				/* validation is best-effort */
+			}
 			await applyOrchestrator(pi, ctx, cfg);
 		} else {
 			setReadyStatus(ctx);
