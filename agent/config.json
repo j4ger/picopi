@@ -1,8 +1,6 @@
 {
   "_comment": "Shipped DEFAULT config. User overrides live in ~/.config/picopi/config.json (same for every install). Roles map to an alias + thinking + timeout; each alias is an ordered list of provider/id models, first with a working API key wins.",
 
-  "autoResolveOrchestrator": true,
-
   "orchestrator": {
     "model": "pro",
     "thinking": "high"

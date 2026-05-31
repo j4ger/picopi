@@ -23,7 +23,7 @@ function registry(ctx: ExtensionContext): ModelRegistryLike {
 
 async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig) {
 	const role = cfg.orchestrator;
-	if (!role || cfg.autoResolveOrchestrator === false) {
+	if (!role) {
 		setReadyStatus(ctx);
 		return;
 	}

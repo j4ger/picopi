@@ -27,7 +27,6 @@ interface RoleConfig {
 }
 
 export interface PicopiConfig {
-	autoResolveOrchestrator?: boolean;
 	orchestrator?: RoleConfig;
 	agents?: Record<string, RoleConfig>;
 	aliases?: Record<string, string[]>;
