@@ -71,9 +71,9 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 					});
 					console.warn(`picopi: ${failures.length} configured model resolution(s) failed:\n${lines.join("\n")}`);
 					if (failures.some((f) => f.role === "orchestrator")) {
-						setPicopiFooter({ role: cfg.orchestrator?.model, note: `${failures.length} role(s) unresolved — run :picopi`, tone: "warning" });
+						setPicopiFooter({ role: cfg.orchestrator?.model, note: `${failures.length} role(s) unresolved — run /picopi`, tone: "warning" });
 					} else {
-						ctx.ui.notify(`${failures.length} role model(s) unresolved — run :picopi for details`, "warning");
+						ctx.ui.notify(`${failures.length} role model(s) unresolved — run /picopi for details`, "warning");
 					}
 				}
 			} catch {
