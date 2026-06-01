@@ -102,7 +102,7 @@ fi
 
 cat <<EOF
 
-Then add a provider/model + key (env vars or 'pi login'; see pi's provider docs).
+Then add a provider/model + key (env vars or 'picopi login'; see pi's provider docs).
 
 Uninstall: rm $launcher && rm -rf $dir
 EOF
