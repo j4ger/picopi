@@ -131,6 +131,9 @@ function output(r: RunResult): string {
 
 // Status Panel
 
+const MAX_DISPLAY_SUBAGENTS = 4;
+const MAX_RUNNING_IN_STATS = 3;
+
 function updateStatusPanel(context?: any) {
 	if (context) extensionCtx = context;
 	if (!extensionCtx) return;
@@ -157,31 +160,70 @@ function updateStatusPanel(context?: any) {
 							a.status === "stuck" ? -1 : 1
 						);
 
-						for (const sub of sorted) {
-							const icon = sub.status === "running" ? "o" : sub.status === "done" ? "+" : sub.status === "stuck" ? "!" : "x";
-							const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
-							const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
+						// When there are too many subagents to show individually,
+						// switch to a compact statistics view to avoid truncation.
+						if (sorted.length > MAX_DISPLAY_SUBAGENTS) {
+							const counts = {
+								running: sorted.filter(s => s.status === "running").length,
+								done: sorted.filter(s => s.status === "done").length,
+								stuck: sorted.filter(s => s.status === "stuck").length,
+								failed: sorted.filter(s => s.status === "failed").length,
+							};
+							const totalMs = sorted.reduce((sum, s) => sum + ((s.endTime ?? Date.now()) - s.startTime), 0);
+							const avgMs = totalMs / sorted.length;
 
 							container.addChild(new Text(
-								theme.fg(color, ` ${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
+								theme.fg("text", ` ${sorted.length} total`) + theme.fg("dim", ` · ${formatDuration(avgMs)} avg`),
 								1, 0
 							));
 
-							if (sub.status === "stuck") {
-								container.addChild(new Text(theme.fg("warning", "    timeout"), 1, 0));
-							} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
-								container.addChild(new Text(theme.fg("dim", `    ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 1, 0));
-							}
-						}
+							if (counts.running) container.addChild(new Text(theme.fg("warning", ` ${counts.running} running`), 1, 0));
+							if (counts.done) container.addChild(new Text(theme.fg("success", ` ${counts.done} done`), 1, 0));
+							if (counts.stuck) container.addChild(new Text(theme.fg("warning", ` ${counts.stuck} stuck`), 1, 0));
+							if (counts.failed) container.addChild(new Text(theme.fg("error", ` ${counts.failed} failed`), 1, 0));
 
-						const running = [...activeSubagents.values()].filter(s => s.status === "running").length;
-						const stuck = [...activeSubagents.values()].filter(s => s.status === "stuck").length;
-						if (running || stuck) {
-							container.addChild(new Spacer(1));
-							const parts: string[] = [];
-							if (running) parts.push(`${running} active`);
-							if (stuck) parts.push(`${stuck} stuck`);
-							container.addChild(new Text(theme.fg(stuck ? "warning" : "muted", parts.join(", ")), 1, 0));
+							// Still show the most relevant running agents
+							const running = sorted.filter(s => s.status === "running");
+							if (running.length) {
+								container.addChild(new Spacer(1));
+								for (const sub of running.slice(0, MAX_RUNNING_IN_STATS)) {
+									const elapsed = formatDuration(Date.now() - sub.startTime);
+									container.addChild(new Text(
+										theme.fg("warning", ` ▸ ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
+										1, 0
+									));
+								}
+								if (running.length > MAX_RUNNING_IN_STATS) {
+									container.addChild(new Text(theme.fg("dim", ` +${running.length - MAX_RUNNING_IN_STATS} more`), 1, 0));
+								}
+							}
+						} else {
+							for (const sub of sorted) {
+								const icon = sub.status === "running" ? "o" : sub.status === "done" ? "+" : sub.status === "stuck" ? "!" : "x";
+								const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
+								const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
+
+								container.addChild(new Text(
+									theme.fg(color, ` ${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
+									1, 0
+								));
+
+								if (sub.status === "stuck") {
+									container.addChild(new Text(theme.fg("warning", "    timeout"), 1, 0));
+								} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
+									container.addChild(new Text(theme.fg("dim", `    ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 1, 0));
+								}
+							}
+
+							const running = [...activeSubagents.values()].filter(s => s.status === "running").length;
+							const stuck = [...activeSubagents.values()].filter(s => s.status === "stuck").length;
+							if (running || stuck) {
+								container.addChild(new Spacer(1));
+								const parts: string[] = [];
+								if (running) parts.push(`${running} active`);
+								if (stuck) parts.push(`${stuck} stuck`);
+								container.addChild(new Text(theme.fg(stuck ? "warning" : "muted", parts.join(", ")), 1, 0));
+							}
 						}
 					};
 
