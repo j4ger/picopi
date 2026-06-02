@@ -56,6 +56,7 @@ picopi uses pi's auth. See [pi's provider docs](https://github.com/earendil-work
 
 | Command | Effect |
 |---------|--------|
+| `/preset [name]` | Switch alias preset (or list presets) |
 | `/picopi` | Config status panel |
 | `/undo` | Rewind one turn |
 | `/checkpoints` | List workspace checkpoints |
@@ -140,8 +141,32 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
 ```
 
 - **Aliases** — ordered fallback chain. First working key wins.
+- **Presets** — alias overrides using `alias@preset` naming. Switch at runtime with `/preset`.
 - **Thinking** — `off` → `minimal` → `low` → `medium` → `high` → `xhigh`
 - **Timeout** — seconds before watchdog kills a stuck agent
+
+### Presets
+
+Define alias overrides with `@preset` names so you can switch the whole fallback chain at runtime without duplicating the rest of the config.
+
+```jsonc
+{
+  "aliases": {
+    "pro":        ["anthropic/claude-opus-4",   "google/gemini-2.5-pro"],
+    "pro@fast":   ["google/gemini-2.5-flash"],
+    "pro@local":  ["ollama/llama3.3:70b"],
+
+    "flash":      ["anthropic/claude-haiku-4",  "google/gemini-2.5-flash"],
+    "flash@fast": ["google/gemini-2.5-flash"],
+    "flash@local":["ollama/llama3.3:70b"]
+  }
+}
+```
+
+- Run `/preset` to see available presets and which one is active.
+- Run `/preset fast` to switch — the orchestrator, subagents, compaction, etc. all follow the new chains instantly.
+- The last-used preset **persists across restarts and session resumes** (stored in `~/.config/picopi/state.json`).
+- If an `@preset` variant is missing for an alias, the base alias is used as a fallback, so partial presets are safe.
 
 ### Web search providers
 

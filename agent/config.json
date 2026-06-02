@@ -15,7 +15,7 @@
   },
 
   "aliases": {
-    "_comment": "Starting point — set these to any provider/model pi supports (see pi's provider docs). Ordered: preferred first, fallbacks after; first with a working key wins.",
+    "_comment": "Starting point — set these to any provider/model pi supports (see pi's provider docs). Ordered: preferred first, fallbacks after; first with a working key wins. Presets: use alias@preset to override at runtime via /preset.",
     "pro":   [ "google/gemini-2.5-pro",   "anthropic/claude-opus-4-5" ],
     "flash": [ "google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5" ]
   },

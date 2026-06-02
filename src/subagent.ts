@@ -18,7 +18,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { loadConfig, roleModelPattern, resolveChain, resolveModelForSpawn } from "./config.ts";
+import { getActivePreset, loadConfig, resolveChain, resolveModelForSpawn } from "./config.ts";
 
 // Constants
 
@@ -402,7 +402,7 @@ async function runAgent(
 				cwd: defaultCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, [DEPTH_ENV]: String(childDepth) },
+				env: { ...process.env, [DEPTH_ENV]: String(childDepth), PICOPI_ACTIVE_PRESET: getActivePreset() },
 			});
 			let buf = "";
 

@@ -4,15 +4,38 @@
  * by a single config (config.json in the agent dir).
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { configPath, loadConfig, validateAllResolutions, type ModelRegistryLike, type RoleConfig } from "./config.ts";
+import { configPath, getActivePreset, listPresets, loadConfig, setActivePreset, validateAllResolutions, type ModelRegistryLike, type RoleConfig } from "./config.ts";
+import { applyOrchestrator, setupOrchestrator } from "./orchestrator.ts";
 import { setupFooter } from "./footer.ts";
-import { setupOrchestrator } from "./orchestrator.ts";
 import { setupSubagent } from "./subagent.ts";
 import { setupTodo } from "./todo.ts";
 import { setupUndo } from "./undo.ts";
 import { setupWeb } from "./web.ts";
+
+/** Render read-only lines in a bordered overlay box; closes on Enter/Esc. */
+function showBoxedOverlay(ctx: ExtensionCommandContext, lines: string[]): Promise<void> {
+	return ctx.ui.custom<void>((_tui, theme, _kb, done) => ({
+		render(width: number): string[] {
+			const border = (s: string) => theme.fg("accent", s);
+			const innerW = Math.max(0, width - 2);
+			const hr = "─".repeat(innerW);
+			const out = [border("┌" + hr + "┐")];
+			for (const raw of lines) {
+				const inner = truncateToWidth(raw, innerW);
+				const pad = innerW - visibleWidth(inner);
+				out.push(border("│") + inner + " ".repeat(Math.max(0, pad)) + border("│"));
+			}
+			out.push(border("└" + hr + "┘"));
+			return out;
+		},
+		invalidate(): void {},
+		handleInput(data: string): void {
+			if (matchesKey(data, "enter") || matchesKey(data, "escape")) done();
+		},
+	}), { overlay: true });
+}
 
 export default function (pi: ExtensionAPI) {
 	setupFooter(pi);
@@ -22,6 +45,56 @@ export default function (pi: ExtensionAPI) {
 	setupSubagent(pi);
 	setupWeb(pi);
 
+	// --- /preset command ----------------------------------------------------------
+	pi.registerCommand("preset", {
+		description: "Switch alias preset (or list presets if no name given)",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig();
+			const th = ctx.ui.theme;
+
+			const sortedPresets = listPresets(cfg);
+			const current = getActivePreset();
+
+			if (!args.trim()) {
+				// List mode
+				const lines: string[] = [];
+				lines.push(th.fg("accent", " Presets "));
+				lines.push("  " + th.fg(current ? "dim" : "success", "(default)" + (current ? "" : " ← active")));
+				for (const p of sortedPresets) {
+					const marker = p === current ? th.fg("success", " ← active") : "";
+					lines.push("  " + th.fg("text", p) + marker);
+				}
+				if (!sortedPresets.length) {
+					lines.push("  " + th.fg("dim", "No presets found. Define them as alias@preset in config.json."));
+				}
+				await showBoxedOverlay(ctx, lines);
+				return;
+			}
+
+			// Switch mode
+			const name = args.trim();
+			const prev = current;
+			if (name !== "default" && name !== "" && !sortedPresets.includes(name)) {
+				const hint = sortedPresets.length ? ` Available: ${sortedPresets.join(", ")}` : "";
+				ctx.ui.notify(`Unknown preset "${name}".${hint}`, "error");
+				return;
+			}
+			const target = name === "default" ? "" : name;
+			setActivePreset(target);
+			const res = await applyOrchestrator(pi, ctx, cfg);
+			if (!res.ok) {
+				// Roll back so we don't leave the session pointing at an unresolved chain.
+				setActivePreset(prev);
+				await applyOrchestrator(pi, ctx, cfg);
+				ctx.ui.notify(`Preset "${target || "default"}" not applied: ${res.detail ?? "orchestrator unresolved"}`, "error");
+				return;
+			}
+			const label = target || "default";
+			ctx.ui.notify(`Switched to preset "${label}"${res.detail ? ` (${res.detail})` : ""}`, "success");
+		},
+	});
+
+	// --- /picopi command ----------------------------------------------------------
 	pi.registerCommand("picopi", {
 		description: "Show picopi config status (Enter or Esc to close)",
 		handler: async (_args, ctx) => {
@@ -71,30 +144,7 @@ export default function (pi: ExtensionAPI) {
 				lines.push("  " + th.fg("muted", `${alias} → `) + th.fg("dim", models.join(" → ")));
 			}
 
-			await ctx.ui.custom<void>((_tui, _theme, _kb, done) => {
-				return {
-					render(width: number): string[] {
-						const out: string[] = [];
-						const border = (s: string) => th.fg("accent", s);
-						const innerW = Math.max(0, width - 2);
-						const hr = "─".repeat(innerW);
-						out.push(border("┌" + hr + "┐"));
-						for (const raw of lines) {
-							const inner = truncateToWidth(raw, innerW);
-							const pad = innerW - visibleWidth(inner);
-							out.push(border("│") + inner + " ".repeat(Math.max(0, pad)) + border("│"));
-						}
-						out.push(border("└" + hr + "┘"));
-						return out;
-					},
-					invalidate(): void {},
-					handleInput(data: string): void {
-						if (matchesKey(data, "enter") || matchesKey(data, "escape")) {
-							done();
-						}
-					},
-				};
-			}, { overlay: true });
+			await showBoxedOverlay(ctx, lines);
 		},
 	});
 }

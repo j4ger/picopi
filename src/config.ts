@@ -85,10 +85,73 @@ export function configPath(): string | null {
 	return candidatePaths().find((p) => fs.existsSync(p)) ?? null;
 }
 
-/** Expand an alias into its ordered resolution chain (or treat it as a literal provider/id). */
+/** Separator for preset-scoped alias keys, e.g. `pro@fast`. */
+const PRESET_SEP = "@";
+
+// ── Active preset (session-local, persisted across invocations) ──────────────
+
+/** Load the last-used preset from `state.json` in the agent dir, if any. */
+function loadPersistedPreset(): string {
+	try {
+		const statePath = path.join(getAgentDir(), "state.json");
+		if (!fs.existsSync(statePath)) return "";
+		const state = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+		if (typeof state.activePreset === "string" && state.activePreset) return state.activePreset;
+	} catch {
+		/* corrupted or missing — ignore */
+	}
+	return "";
+}
+
+/** Write the current preset to the state file so it survives across invocations. */
+function persistPreset(name: string): void {
+	try {
+		const statePath = path.join(getAgentDir(), "state.json");
+		if (name) {
+			fs.writeFileSync(statePath, JSON.stringify({ activePreset: name }, null, 2), "utf-8");
+		} else {
+			// Clear the file when reverting to default (don't leave stale preset around).
+			try { fs.unlinkSync(statePath); } catch { /* ok if already gone */ }
+		}
+	} catch {
+		/* can't write — non-fatal */
+	}
+}
+
+// Seed from the env var first (child/subagent processes), then fall back to the
+// persisted state file so the preset survives restarts and session resumes.
+let activePreset = process.env.PICOPI_ACTIVE_PRESET ?? loadPersistedPreset();
+
+/** Get the current active preset (session-local). */
+export function getActivePreset(): string {
+	return activePreset;
+}
+
+/** Set (or clear) the active preset. Persists to state.json so it survives
+ *  restarts and session resumes. Pass "" to clear (reverts to default). */
+export function setActivePreset(name: string): void {
+	activePreset = name;
+	persistPreset(name);
+}
+
+/** Unique preset names declared in the config via `alias@preset` keys, sorted. */
+export function listPresets(cfg: PicopiConfig): string[] {
+	const presets = new Set<string>();
+	for (const key of Object.keys(cfg.aliases ?? {})) {
+		const at = key.lastIndexOf(PRESET_SEP);
+		if (at > 0 && at < key.length - 1) presets.add(key.slice(at + 1));
+	}
+	return Array.from(presets).sort();
+}
+
+/** Expand an alias into its ordered resolution chain (or treat it as a literal provider/id).
+ *  When a preset is active, prefers the `alias@preset` chain, then falls back to the
+ *  base alias, then to the alias as a literal provider/id. */
 export function resolveChain(cfg: PicopiConfig, alias: string): string[] {
-	const chain = cfg.aliases?.[alias] ?? [];
-	return chain.length ? Array.from(new Set(chain)) : [alias];
+	const aliases = cfg.aliases;
+	let chain = activePreset ? aliases?.[`${alias}${PRESET_SEP}${activePreset}`] : undefined;
+	if (!chain?.length) chain = aliases?.[alias];
+	return chain?.length ? Array.from(new Set(chain)) : [alias];
 }
 
 export interface ModelRegistryLike {

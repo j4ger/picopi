@@ -12,8 +12,13 @@
   },
 
   "aliases": {
-    "pro":   [ "openrouter/anthropic/claude-opus-4",   "anthropic/claude-opus-4-5",   "google/gemini-2.5-pro" ],
-    "flash": [ "openrouter/anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-5", "google/gemini-2.5-flash" ]
+    "pro":        [ "openrouter/anthropic/claude-opus-4",   "anthropic/claude-opus-4-5",   "google/gemini-2.5-pro" ],
+    "flash":      [ "openrouter/anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-5", "google/gemini-2.5-flash" ]
+    // Presets: override chains at runtime via /preset by naming them alias@preset.
+    // Example:
+    // "pro@fast":   [ "google/gemini-2.5-flash" ],
+    // "pro@local":  [ "ollama/llama3.3:70b" ],
+    // "flash@fast": [ "google/gemini-2.5-flash" ]
   },
 
   "compaction": { "model": "flash" },

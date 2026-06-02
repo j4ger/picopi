@@ -21,30 +21,37 @@ function registry(ctx: ExtensionContext): ModelRegistryLike {
 	return ctx.modelRegistry as unknown as ModelRegistryLike;
 }
 
-async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig) {
+export interface ApplyOrchestratorResult {
+	ok: boolean;
+	/** Resolved provider/id spec when ok, else a short failure reason. */
+	detail?: string;
+}
+
+export async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig): Promise<ApplyOrchestratorResult> {
 	const role = cfg.orchestrator;
 	if (!role) {
 		setReadyStatus(ctx);
-		return;
+		return { ok: true };
 	}
 
 	const resolved = await resolveRoleModel(registry(ctx), cfg, role.model);
 
 	if (!resolved) {
 		setPicopiFooter({ role: role.model, note: `no model for "${role.model}" — using session default`, tone: "warning" });
-		return;
+		return { ok: false, detail: `no working model for "${role.model}"` };
 	}
 
 	const ok = await pi.setModel(resolved.model as any);
 	if (!ok) {
 		setPicopiFooter({ role: role.model, note: `auth failed for ${resolved.spec}`, tone: "warning" });
-		return;
+		return { ok: false, detail: `auth failed for ${resolved.spec}` };
 	}
 	if (role.thinking) pi.setThinkingLevel(role.thinking);
 
 	// Footer now owns the model display (by name); we only contribute the role.
 	setPicopiFooter({ role: role.model });
 	clearPicopiFooterNote();
+	return { ok: true, detail: resolved.spec };
 }
 
 function setReadyStatus(_ctx: ExtensionContext) {
