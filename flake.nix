@@ -1,7 +1,8 @@
 {
-  description = "picopi — a batteries-included, contained pi coding agent setup";
+  description = "picopi — a batteries-included pi coding agent setup";
+
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     systems.url = "github:nix-systems/default";
     pi = {
       url = "github:lukasl-dev/pi.nix";
@@ -10,52 +11,36 @@
     };
   };
 
-  nixConfig = {
-    extra-substituters = [ "https://pi.cachix.org" ];
-    extra-trusted-public-keys = [ "pi.cachix.org-1:lGeoGJaZ5ZDabuRzkcD5EBTNnDM4HJ1vqeOxlWk1Flk=" ];
-  };
-
-  outputs =
-    {
-      self,
-      nixpkgs,
-      systems,
-      pi,
-    }:
+  outputs = { self, nixpkgs, systems, pi }:
     let
       eachSystem = nixpkgs.lib.genAttrs (import systems);
-
-      # Build picopi for a system, with optional mkPicopi-style overrides.
-      build =
-        system: args:
-        import ./nix/picopi.nix (
-          args
-          // {
-            pkgs = import nixpkgs { inherit system; };
-            piPkg = pi.packages.${system}.coding-agent;
-            src = ./.;
-          }
-        );
     in
     {
-      packages = eachSystem (system: {
-        default = build system { };
-        picopi = build system { };
-      });
+      packages = eachSystem (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          piPkg = pi.packages.${system}.coding-agent;
+        in
+        {
+          default = pkgs.writeShellScriptBin "picopi" ''
+            set -euo pipefail
 
-      # Reusable builder for composing picopi with overrides in other flakes.
-      lib = eachSystem (system: {
-        mkPicopi = build system;
-      });
+            dir="''${PICOPI_HOME:-''${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
+            mkdir -p "$dir"
 
-      homeModules.default = import ./nix/home-manager.nix self;
+            [ -e "$dir/settings.json" ] || cp ${self}/agent/settings.json "$dir/settings.json"
+            [ -e "$dir/config.json" ] || cp ${self}/agent/config.json "$dir/config.json"
+            [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
 
-      overlays.default = _: prev: {
-        picopi = build prev.stdenv.hostPlatform.system { };
-      };
-
-      formatter = eachSystem (system:
-        (import nixpkgs { inherit system; }).nixfmt-rfc-style
+            export PI_CODING_AGENT_DIR="$dir"
+            exec ${pkgs.lib.getExe piPkg} \
+              --extension ${self}/src \
+              --prompt-template ${self}/agent/prompts \
+              --theme ${self}/agent/themes \
+              --append-system-prompt ${self}/agent/AGENTS.md \
+              "$@"
+          '';
+        }
       );
     };
 }
