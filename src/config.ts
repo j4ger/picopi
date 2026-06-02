@@ -221,8 +221,19 @@ function loadModelsJson(): ModelsJson {
  * processes (pi does NOT support comma-separated fallback chains).
  */
 export function resolveModelForSpawn(cfg: PicopiConfig, alias: string): string | null {
+	const chain = resolveModelChainForSpawn(cfg, alias);
+	return chain.length > 0 ? chain[0] : null;
+}
+
+/**
+ * Resolve ALL models from an alias chain that exist in models.json and have
+ * an API key configured.  Returns the full ordered list of `provider/modelId`
+ * specs so callers can implement runtime retry-with-fallback.
+ */
+export function resolveModelChainForSpawn(cfg: PicopiConfig, alias: string): string[] {
 	const chain = resolveChain(cfg, alias);
 	const mj = loadModelsJson();
+	const result: string[] = [];
 	for (const spec of chain) {
 		const slash = spec.indexOf("/");
 		if (slash <= 0) continue;
@@ -235,9 +246,9 @@ export function resolveModelForSpawn(cfg: PicopiConfig, alias: string): string |
 		if (!hasModel) continue;
 		// Check the provider has an API key
 		if (!prov.apiKey) continue;
-		return spec;
+		result.push(spec);
 	}
-	return null;
+	return result;
 }
 
 export interface ValidationIssue {

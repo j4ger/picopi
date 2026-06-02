@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configPath, getActivePreset, listPresets, loadConfig, setActivePreset, validateAllResolutions, type ModelRegistryLike, type RoleConfig } from "./config.ts";
 import { applyOrchestrator, setupOrchestrator } from "./orchestrator.ts";
+import { setupFallback } from "./fallback.ts";
 import { setupFooter } from "./footer.ts";
 import { setupSubagent } from "./subagent.ts";
 import { setupTodo } from "./todo.ts";
@@ -40,6 +41,7 @@ function showBoxedOverlay(ctx: ExtensionCommandContext, lines: string[]): Promis
 export default function (pi: ExtensionAPI) {
 	setupFooter(pi);
 	setupOrchestrator(pi);
+	setupFallback(pi);
 	setupUndo(pi);
 	setupTodo(pi);
 	setupSubagent(pi);

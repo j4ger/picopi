@@ -18,7 +18,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { getActivePreset, loadConfig, resolveChain, resolveModelForSpawn } from "./config.ts";
+import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn, resolveModelForSpawn } from "./config.ts";
 
 // Constants
 
@@ -127,6 +127,28 @@ function output(r: RunResult): string {
 	return r.stuck ? "Provider stopped responding (timeout)" :
 		failed(r) ? r.errorMessage || r.stderr || finalOutput(r.messages) || "(no output)" :
 		finalOutput(r.messages) || "(no output)";
+}
+
+/** True if the failure looks like a model/API issue (retryable), as opposed to
+ *  a task-level error (bad code, missing file, etc.). */
+function isModelError(r: RunResult): boolean {
+	// Watchdog timeout → definitely a model/network issue.
+	if (r.stuck) return true;
+	// User cancelled.
+	if (r.stopReason === "aborted") return false;
+	// API error patterns in the error message.
+	if (r.errorMessage) {
+		const msg = r.errorMessage.toLowerCase();
+		if (/overloaded|rate.?limit|too many requests|server error|internal error|503|502|500|timeout|unavailable|capacity/i.test(msg)) return true;
+	}
+	// Connection / network errors in stderr.
+	if (r.stderr) {
+		const err = r.stderr.toLowerCase();
+		if (/econnrefused|econnreset|etimedout|enotfound|socket hang up|eaddrinuse/i.test(err)) return true;
+	}
+	// stopReason "error" with zero exit code but no other details → tentatively a model error.
+	if (r.stopReason === "error" && !r.exitCode) return true;
+	return false;
 }
 
 // Status Panel
@@ -352,125 +374,164 @@ async function runAgent(
 	timeout?: number,
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === name);
-	const base: RunResult = { agent: name, task, exitCode: 0, messages: [], stderr: "" };
 	if (!agent) {
 		trackComplete(statusId, false);
-		return { ...base, exitCode: 1, stderr: `Unknown agent "${name}". Available: ${agents.map((a) => `"${a.name}"`).join(", ") || "none"}.` };
+		return { agent: name, task, exitCode: 1, messages: [], stderr: `Unknown agent "${name}". Available: ${agents.map((a) => `"${a.name}"`).join(", ") || "none"}.` };
 	}
 
 	const cfg = loadConfig();
 	const role = cfg.agents?.[name];
 	const tools = resolveTools(agent, role);
-	const args = ["--mode", "json", "-p", "--no-session"];
-	if (role) {
-		const spec = resolveModelForSpawn(cfg, role.model);
-		if (spec) {
-			args.push("--model", spec);
-		} else {
-			// No model in the chain matched models.json — pass the first entry
-			// so pi gives a meaningful "model not found" error.
-			const chain = resolveChain(cfg, role.model);
-			if (chain[0]) args.push("--model", chain[0]);
-		}
-		if (role.thinking) args.push("--thinking", role.thinking);
-	}
-	args.push("--tools", tools.join(","));
-	args.push("--extension", import.meta.dirname);
-
 	const effectiveTimeout = timeout || role?.timeout || DEFAULT_TIMEOUT;
+
+	// ── Resolve the full model chain for retry-with-fallback ─────────────
+	let modelSpecs: string[];
+	if (role) {
+		modelSpecs = resolveModelChainForSpawn(cfg, role.model);
+		if (modelSpecs.length === 0) {
+			// No model in the chain matched models.json with an API key.
+			// Pass the first raw chain entry so pi gives a meaningful
+			// "model not found" error.
+			const rawChain = resolveChain(cfg, role.model);
+			modelSpecs = rawChain.length > 0 ? [rawChain[0]] : [];
+		}
+	} else {
+		modelSpecs = [];
+	}
+	if (modelSpecs.length === 0) modelSpecs = [name];
+
+	// ── Build shared args (everything except --model / --thinking) ───────
+	const sharedArgs = ["--mode", "json", "-p", "--no-session"];
+	sharedArgs.push("--tools", tools.join(","));
+	sharedArgs.push("--extension", import.meta.dirname);
+
 	let promptDir: string | null = null;
 	let promptPath: string | null = null;
-	let watchdogId: NodeJS.Timeout | null = null;
 
 	try {
 		if (agent.systemPrompt.trim()) {
 			promptDir = fs.mkdtempSync(path.join(os.tmpdir(), "picopi-agent-"));
 			promptPath = path.join(promptDir, `${name.replace(/[^\w.-]+/g, "_")}.md`);
 			fs.writeFileSync(promptPath, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
-			args.push("--append-system-prompt", promptPath);
+			sharedArgs.push("--append-system-prompt", promptPath);
 		}
-		args.push(`Task: ${task}`);
+		sharedArgs.push(`Task: ${task}`);
 
-		let aborted = false;
-		let stuck = false;
-		let lastEventTime = Date.now();
+		// ── Try each model in the chain ──────────────────────────────────
+		let lastResult: RunResult | null = null;
+		for (let attempt = 0; attempt < modelSpecs.length; attempt++) {
+			const spec = modelSpecs[attempt];
+			const args = [...sharedArgs, "--model", spec];
+			if (role?.thinking) args.push("--thinking", role.thinking);
 
-		const code = await new Promise<number>((resolve) => {
-			const inv = piInvocation(args);
-			const childDepth = Number(process.env[DEPTH_ENV] ?? "0") + 1;
-			const proc = spawn(inv.command, inv.args, {
-				cwd: defaultCwd,
-				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, [DEPTH_ENV]: String(childDepth), PICOPI_ACTIVE_PRESET: getActivePreset() },
-			});
-			let buf = "";
-
-			// Per-process watchdog
-			watchdogId = setInterval(() => {
-				if (Date.now() - lastEventTime > effectiveTimeout * 1000) {
-					stuck = true;
-					trackStuck(statusId);
-					proc.kill("SIGTERM");
-					setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000);
-				}
-			}, WATCHDOG_INTERVAL);
-
-			const onLine = (line: string) => {
-				if (!line.trim()) return;
-				let ev: any;
-				try { ev = JSON.parse(line); } catch { return; }
-
-				// Any event means process is alive
-				lastEventTime = Date.now();
-
-				if (ev.type === "tool_execution_start") {
-					trackProgress(statusId, undefined, ev.toolName);
-				}
-
-				if ((ev.type === "message_end" || ev.type === "tool_result_end") && ev.message) {
-					const msg = ev.message as Message;
-					base.messages.push(msg);
-					if (msg.role === "assistant") {
-						if (!base.model && msg.model) base.model = msg.model;
-						if (msg.stopReason) base.stopReason = msg.stopReason;
-						if (msg.errorMessage) base.errorMessage = msg.errorMessage;
-					}
-					trackProgress(statusId, `${base.messages.filter(m => m.role === "assistant").length} turns`);
-				}
-			};
-
-			proc.stdout.on("data", (d) => {
-				buf += d.toString();
-				const lines = buf.split("\n");
-				buf = lines.pop() || "";
-				for (const l of lines) onLine(l);
-			});
-			proc.stderr.on("data", (d) => { base.stderr += d.toString(); });
-			proc.on("close", (c) => {
-				if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
-				if (buf.trim()) onLine(buf);
-				resolve(c ?? 0);
-			});
-			proc.on("error", () => {
-				if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
-				resolve(1);
-			});
-
-			if (signal) {
-				const kill = () => { aborted = true; proc.kill("SIGTERM"); setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000); };
-				signal.aborted ? kill() : signal.addEventListener("abort", kill, { once: true });
+			if (attempt > 0) {
+				trackProgress(statusId, `retrying with ${spec}`);
 			}
-		});
 
-		if (watchdogId) clearInterval(watchdogId);
-		base.exitCode = code;
-		base.stuck = stuck;
-		if (aborted) base.stopReason = "aborted";
-		trackComplete(statusId, !failed(base));
-		return base;
+			const base: RunResult = { agent: name, task, exitCode: 0, messages: [], stderr: "" };
+			let aborted = false;
+			let stuck = false;
+			let lastEventTime = Date.now();
+			let watchdogId: NodeJS.Timeout | null = null;
+
+			const code = await new Promise<number>((resolve) => {
+				const inv = piInvocation(args);
+				const childDepth = Number(process.env[DEPTH_ENV] ?? "0") + 1;
+				const proc = spawn(inv.command, inv.args, {
+					cwd: defaultCwd,
+					shell: false,
+					stdio: ["ignore", "pipe", "pipe"],
+					env: { ...process.env, [DEPTH_ENV]: String(childDepth), PICOPI_ACTIVE_PRESET: getActivePreset() },
+				});
+				let buf = "";
+
+				// Per-process watchdog — only mark as stuck on the first
+				// attempt; retries show "retrying" via trackProgress above.
+				watchdogId = setInterval(() => {
+					if (Date.now() - lastEventTime > effectiveTimeout * 1000) {
+						stuck = true;
+						if (attempt === 0) trackStuck(statusId);
+						proc.kill("SIGTERM");
+						setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000);
+					}
+				}, WATCHDOG_INTERVAL);
+
+				const onLine = (line: string) => {
+					if (!line.trim()) return;
+					let ev: any;
+					try { ev = JSON.parse(line); } catch { return; }
+
+					// Any event means process is alive
+					lastEventTime = Date.now();
+
+					if (ev.type === "tool_execution_start") {
+						trackProgress(statusId, undefined, ev.toolName);
+					}
+
+					if ((ev.type === "message_end" || ev.type === "tool_result_end") && ev.message) {
+						const msg = ev.message as Message;
+						base.messages.push(msg);
+						if (msg.role === "assistant") {
+							if (!base.model && msg.model) base.model = msg.model;
+							if (msg.stopReason) base.stopReason = msg.stopReason;
+							if (msg.errorMessage) base.errorMessage = msg.errorMessage;
+						}
+						const turns = base.messages.filter(m => m.role === "assistant").length;
+						const label = attempt > 0
+							? `${turns} turns (attempt ${attempt + 1}/${modelSpecs.length})`
+							: `${turns} turns`;
+						trackProgress(statusId, label);
+					}
+				};
+
+				proc.stdout.on("data", (d) => {
+					buf += d.toString();
+					const lines = buf.split("\n");
+					buf = lines.pop() || "";
+					for (const l of lines) onLine(l);
+				});
+				proc.stderr.on("data", (d) => { base.stderr += d.toString(); });
+				proc.on("close", (c) => {
+					if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
+					if (buf.trim()) onLine(buf);
+					resolve(c ?? 0);
+				});
+				proc.on("error", () => {
+					if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
+					resolve(1);
+				});
+
+				if (signal) {
+					const kill = () => { aborted = true; proc.kill("SIGTERM"); setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000); };
+					signal.aborted ? kill() : signal.addEventListener("abort", kill, { once: true });
+				}
+			});
+
+			if (watchdogId) clearInterval(watchdogId);
+			base.exitCode = code;
+			base.stuck = stuck;
+			if (aborted) base.stopReason = "aborted";
+
+			// Success?
+			if (!failed(base)) {
+				trackComplete(statusId, true);
+				return base;
+			}
+
+			lastResult = base;
+
+			// Retryable model error and more models in the chain?
+			if (attempt < modelSpecs.length - 1 && isModelError(base)) {
+				continue;
+			}
+
+			// Non-retryable error, or last model in chain — stop.
+			break;
+		}
+
+		trackComplete(statusId, false);
+		return lastResult!;
 	} catch (e) {
-		if (watchdogId) clearInterval(watchdogId);
 		trackComplete(statusId, false);
 		throw e;
 	} finally {
