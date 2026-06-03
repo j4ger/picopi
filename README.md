@@ -145,6 +145,19 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
 - **Thinking** — `off` → `minimal` → `low` → `medium` → `high` → `xhigh`
 - **Timeout** — seconds before watchdog kills a stuck agent
 
+### Runtime fallback
+
+When the orchestrator's model errors out (timeout, overload, rate limit, 5xx,
+auth, …), picopi switches to the next model in the alias chain so pi's own
+retry picks up the fallback model. Context-overflow errors are left to pi's
+compaction instead. Disable with `PI_FALLBACK_DISABLE=true`.
+
+**Limitation:** fallback only fires while pi is retrying. Non-retryable errors
+(auth, content-policy, model-not-found) and `retry.maxRetries: 0` stop the turn
+immediately — the model is switched for the *next* turn, but the failed turn is
+not re-run automatically. Re-send your prompt to retry on the fallback model.
+The chain is also walked at most `retry.maxRetries + 1` models per turn.
+
 ### Presets
 
 Define alias overrides with `@preset` names so you can switch the whole fallback chain at runtime without duplicating the rest of the config.

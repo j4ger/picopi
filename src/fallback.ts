@@ -1,12 +1,19 @@
 /**
  * picopi runtime model fallback — orchestrator.
  *
- * Switches to the next model in the fallback chain when the upstream API
- * reports a non-retryable error or when pi's retry mechanism exhausts
- * retries without success.
+ * Switches to the next model in the fallback chain when an upstream API error
+ * is reported. Any errored assistant response is treated as an explicit
+ * upstream failure another provider might handle — except context overflow,
+ * which is left to pi's compaction.
+ *
+ * Failed attempts surface as an errored assistant `message_end` — the same
+ * signal pi's own retry loop keys off. Switching the model there makes pi's
+ * retry continuation (and the next turn) use the fallback model, walking the
+ * chain on each successive failure.
  *
  * No timeout-based fallback — pi's own retry mechanism handles transient
  * errors and slow responses. We only act on explicit failure signals.
+ * (auto_retry_* are NOT forwarded to extensions, so we can't use them.)
  *
  * Inspired by pi-retry-fallback-model (99degree / GitHub issue #4328).
  *
@@ -14,6 +21,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isContextOverflow } from "@earendil-works/pi-ai";
 import { loadConfig, resolveChain, type PicopiConfig } from "./config.ts";
 import { setPicopiFooter } from "./footer.ts";
 
@@ -136,27 +144,18 @@ export function setupFallback(pi: ExtensionAPI) {
 		}
 	});
 
-	// ── Hard errors: upstream won't recover from these ────────────────────
-	pi.on("after_provider_response", (event, ctx) => {
+	// ── Upstream error: switch model so pi's retry uses the fallback ──────
+	//    Any errored assistant response is an explicit upstream failure another
+	//    provider might handle. Skip context overflow — pi handles that via
+	//    compaction. (stopReason "error" already excludes user aborts.)
+	pi.on("message_end", async (event, ctx) => {
 		if (!enabled) return;
 		if (!currentAlias) return;
 
-		// Non-retryable HTTP errors: auth failures, model not found, quota exhausted
-		if ([401, 403, 404, 402].includes(event.status)) {
-			const cfg = loadConfig();
-			tryFallback(pi, ctx, cfg, `Error ${event.status}`);
-		}
-	});
+		const m = event.message as any;
+		if (m.role !== "assistant" || m.stopReason !== "error") return;
+		if (isContextOverflow(m, ctx.model?.contextWindow)) return;
 
-	// ── Retry exhaustion: pi's retry loop gave up ─────────────────────────
-	pi.on("auto_retry_end", (event, ctx) => {
-		if (!enabled) return;
-		if (!currentAlias) return;
-
-		// Only act if retries were exhausted without success
-		if (!event.success) {
-			const cfg = loadConfig();
-			tryFallback(pi, ctx, cfg, "Retries exhausted");
-		}
+		await tryFallback(pi, ctx, loadConfig(), "Upstream error");
 	});
 }
