@@ -1,51 +1,79 @@
 /**
  * picopi runtime model fallback — orchestrator.
  *
- * Hooks into before_provider_request to set per-request timeouts. When a
- * request times out (model hung / slow), walks the fallback chain from
- * config.json aliases, calls pi.setModel() with the next model, and pi
- * automatically retries the pending request with the new model.
+ * Switches to the next model in the fallback chain when the upstream API
+ * reports a non-retryable error or when pi's retry mechanism exhausts
+ * retries without success.
  *
- * The chain continues walking until success or exhaustion. When all fallbacks
- * are exhausted, the last request completes or fails naturally.
+ * No timeout-based fallback — pi's own retry mechanism handles transient
+ * errors and slow responses. We only act on explicit failure signals.
  *
  * Inspired by pi-retry-fallback-model (99degree / GitHub issue #4328).
  *
  * Disable with: PI_FALLBACK_DISABLE=true
- * Override timeout with: PI_FALLBACK_TIMEOUT_MS=<ms>
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig, resolveChain, type PicopiConfig } from "./config.ts";
 import { setPicopiFooter } from "./footer.ts";
 
-// Default per-request timeout (ms).
-const DEFAULT_TIMEOUT_MS = 60_000;
-
-let abortController: AbortController | null = null;
-let timeoutId: ReturnType<typeof setTimeout> | null = null;
 let currentModelSpec: string = "";
 let currentAlias: string = "";
 let enabled = true;
 
-function cleanup() {
-	if (timeoutId) {
-		clearTimeout(timeoutId);
-		timeoutId = null;
-	}
-	if (abortController) {
-		abortController.abort();
-		abortController = null;
-	}
-}
+async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig, reason: string) {
+	if (!currentAlias) return;
 
-function getTimeoutMs(): number {
-	const env = process.env.PI_FALLBACK_TIMEOUT_MS;
-	if (env) {
-		const ms = parseInt(env, 10);
-		if (!isNaN(ms) && ms > 0) return ms;
+	const chain = resolveChain(cfg, currentAlias);
+	if (chain.length <= 1) return;
+
+	const idx = findInChain(chain, currentModelSpec);
+
+	let nextSpec: string | null = null;
+	if (idx === -1) {
+		// Current model not in chain — skip it and pick the first entry
+		// that isn't the current model.
+		for (const spec of chain) {
+			if (spec !== currentModelSpec) {
+				nextSpec = spec;
+				break;
+			}
+		}
+		if (!nextSpec) nextSpec = chain[0];
+	} else if (idx < chain.length - 1) {
+		nextSpec = chain[idx + 1];
 	}
-	return DEFAULT_TIMEOUT_MS;
+
+	if (!nextSpec) {
+		ctx.ui.notify(`⏱ No more fallback models for "${currentAlias}" — request may fail`, "warning");
+		return;
+	}
+
+	// Resolve and switch to the fallback model.
+	const slash = nextSpec.indexOf("/");
+	if (slash <= 0) return;
+	const provider = nextSpec.slice(0, slash);
+	const modelId = nextSpec.slice(slash + 1);
+
+	const model = ctx.modelRegistry.find(provider, modelId);
+	if (!model) {
+		ctx.ui.notify(`⏱ Fallback model ${nextSpec} not found in registry`, "error");
+		return;
+	}
+
+	const success = await pi.setModel(model as any);
+	if (!success) {
+		ctx.ui.notify(`⏱ Failed to switch to ${nextSpec} (no API key?)`, "error");
+		return;
+	}
+
+	currentModelSpec = nextSpec;
+
+	ctx.ui.notify(`⬇ ${reason}: ${nextSpec}`, "info");
+
+	setPicopiFooter({ note: `fallback → ${nextSpec}`, tone: "warning" });
+
+	// pi.setModel() causes pi to retry the pending request with the new model.
 }
 
 /**
@@ -75,84 +103,7 @@ function findInChain(chain: string[], target: string): number {
 	return -1;
 }
 
-async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig) {
-	if (!currentAlias) return;
 
-	const chain = resolveChain(cfg, currentAlias);
-	if (chain.length <= 1) return;
-
-	const idx = findInChain(chain, currentModelSpec);
-
-	let nextSpec: string | null = null;
-	if (idx === -1) {
-		// Current model not in chain — skip it and pick the first entry
-		// that isn't the current model.
-		for (const spec of chain) {
-			if (spec !== currentModelSpec) {
-				nextSpec = spec;
-				break;
-			}
-		}
-		if (!nextSpec) nextSpec = chain[0];
-	} else if (idx < chain.length - 1) {
-		nextSpec = chain[idx + 1];
-	}
-
-	if (!nextSpec) {
-		ctx.ui.notify(`⏱ No more fallback models for "${currentAlias}" — request may fail`, "warning");
-		if (abortController) {
-			abortController.abort();
-			abortController = null;
-		}
-		return;
-	}
-
-	// Abort the current stuck request so the provider layer stops waiting.
-	if (abortController) {
-		abortController.abort();
-		abortController = null;
-	}
-
-	// Resolve and switch to the fallback model.
-	const slash = nextSpec.indexOf("/");
-	if (slash <= 0) return;
-	const provider = nextSpec.slice(0, slash);
-	const modelId = nextSpec.slice(slash + 1);
-
-	const model = ctx.modelRegistry.find(provider, modelId);
-	if (!model) {
-		ctx.ui.notify(`⏱ Fallback model ${nextSpec} not found in registry`, "error");
-		return;
-	}
-
-	const success = await pi.setModel(model as any);
-	if (!success) {
-		ctx.ui.notify(`⏱ Failed to switch to ${nextSpec} (no API key?)`, "error");
-		return;
-	}
-
-	currentModelSpec = nextSpec;
-
-	pi.sendMessage({
-		customType: "picopi-fallback",
-		content: `⏱ Model request timed out after ${getTimeoutMs() / 1000}s.\nSwitched to fallback: **${nextSpec}**\nAuto-retrying...`,
-		display: true,
-	});
-	ctx.ui.notify(`⬇ Fallback: ${nextSpec}`, "info");
-
-	setPicopiFooter({ note: `fallback → ${nextSpec}`, tone: "warning" });
-
-	// Set up a fresh timeout for the retry.  The follow-up retry may bypass
-	// before_provider_request (agent internal retry path), so we ensure a
-	// timeout is always in place so the chain continues walking.
-	cleanup();
-	abortController = new AbortController();
-	const timeoutMs = getTimeoutMs();
-	timeoutId = setTimeout(() => tryFallback(pi, ctx, cfg), timeoutMs);
-
-	// pi.setModel() above already causes pi to retry the pending request
-	// with the new model automatically — no need for an explicit retry.
-}
 
 export function setupFallback(pi: ExtensionAPI) {
 	// ── Track current model ───────────────────────────────────────────────
@@ -178,48 +129,34 @@ export function setupFallback(pi: ExtensionAPI) {
 		}
 	});
 
-	// ── Intercept provider requests — set up per-request timeout ──────────
+	// ── Capture model spec on first request if model_select hasn't fired ──
 	pi.on("before_provider_request", (event, ctx) => {
-		if (!enabled) return;
-		if (!currentAlias) return;
-
-		// Capture model spec from context on the very first request (before
-		// model_select fires).
 		if (!currentModelSpec && ctx.model) {
 			currentModelSpec = `${ctx.model.provider}/${ctx.model.id}`;
 		}
+	});
 
-		const cfg = loadConfig();
-		const chain = resolveChain(cfg, currentAlias);
-		if (chain.length <= 1) return; // single-model chain → nothing to fallback to
+	// ── Hard errors: upstream won't recover from these ────────────────────
+	pi.on("after_provider_response", (event, ctx) => {
+		if (!enabled) return;
+		if (!currentAlias) return;
 
-		// Clean up any existing timeout (e.g. from a previous retry that
-		// DID re-enter before_provider_request).
-		cleanup();
-
-		const timeoutMs = getTimeoutMs();
-		abortController = new AbortController();
-		timeoutId = setTimeout(() => tryFallback(pi, ctx, cfg), timeoutMs);
-
-		// Best-effort: also hint the HTTP layer about the timeout.
-		const payload = event.payload as any;
-		if (payload && typeof payload === "object") {
-			if (payload.options && typeof payload.options === "object") {
-				payload.options.timeout = timeoutMs;
-			} else if (payload.timeout === undefined) {
-				payload.timeout = timeoutMs;
-			}
+		// Non-retryable HTTP errors: auth failures, model not found, quota exhausted
+		if ([401, 403, 404, 402].includes(event.status)) {
+			const cfg = loadConfig();
+			tryFallback(pi, ctx, cfg, `Error ${event.status}`);
 		}
-
-		return payload;
 	});
 
-	// ── Clean up on turn/agent boundaries ─────────────────────────────────
-	pi.on("agent_end", () => {
-		cleanup();
-	});
+	// ── Retry exhaustion: pi's retry loop gave up ─────────────────────────
+	pi.on("auto_retry_end", (event, ctx) => {
+		if (!enabled) return;
+		if (!currentAlias) return;
 
-	pi.on("session_shutdown", () => {
-		cleanup();
+		// Only act if retries were exhausted without success
+		if (!event.success) {
+			const cfg = loadConfig();
+			tryFallback(pi, ctx, cfg, "Retries exhausted");
+		}
 	});
 }
