@@ -131,6 +131,13 @@ export function setupFallback(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 
+		// Reset all module-level state to avoid leaking across sessions.
+		currentModelSpec = "";
+		currentAlias = "";
+		enabled = true;
+		errorsForModel = 0;
+		retryThreshold = 0;
+
 		const cfg = loadConfig();
 		currentAlias = cfg.orchestrator?.model ?? "";
 

@@ -187,6 +187,11 @@ async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): 
 		hits[i].snippet = htmlToText(s[1]).trim();
 		i++;
 	}
+	// If DDG's HTML structure changed and no results were parsed, throw so
+	// the caller can surface a clear error instead of silently returning 0 hits.
+	if (hits.length === 0 && html.length > 1000) {
+		throw new Error("duckduckgo: no results parsed — HTML layout may have changed");
+	}
 	return { provider: "duckduckgo", hits };
 }
 

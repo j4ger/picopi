@@ -81,11 +81,15 @@ export function setupUndo(pi: ExtensionAPI) {
 		//     matches the checkpoint. Those are recoverable from git (the stash
 		//     ref / reflog), so this is safe.
 		// Untracked files are intentionally left untouched (never auto-deleted).
+		//
+		// Safety: stash current state first so the user can recover if needed.
+		const backup = (await pi.exec("git", ["stash", "create", "picopi undo backup"])).stdout.trim();
 		const snapFiles = new Set(gitFileList((await pi.exec("git", ["ls-tree", "-r", "--name-only", ref])).stdout));
 		const { code } = await pi.exec("git", ["checkout", ref, "--", "."]);
 		if (code !== 0) return false;
 		const added = gitFileList((await pi.exec("git", ["ls-files"])).stdout).filter((f) => !snapFiles.has(f));
 		if (added.length) await pi.exec("git", ["rm", "-f", "--", ...added]);
+		if (backup) pi.appendEntry(CHECKPOINT_TYPE, { entryId: `backup-${Date.now()}`, ref: backup, createdAt: Date.now() });
 		return true;
 	}
 

@@ -30,26 +30,33 @@ const DEPTH_ENV = "PICOPI_SUBAGENT_DEPTH";
 const DEFAULT_TIMEOUT = 120; // seconds
 const WATCHDOG_INTERVAL = 5000; // ms
 
-// Env var prefixes that should not leak to child processes.
-// Provider API keys (OPENAI_*, ANTHROPIC_*, etc.) are intentionally kept —
-// the child pi needs them to authenticate. This strips unrelated secrets.
-const SENSITIVE_ENV_PREFIXES = [
-	"AWS_SECRET", "AWS_ACCESS_KEY", "AWS_SESSION",
-	"GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN",
-	"NPM_TOKEN", "NPM_AUTH",
-	"DATABASE_URL", "DB_PASSWORD", "DB_SECRET",
-	"PRIVATE_KEY", "SECRET_KEY", "SIGNING_KEY",
-	"STRIPE_SECRET", "PAYPAL_SECRET",
+// Allowlist of env var prefixes to pass through to child processes.
+// Everything else is stripped to avoid leaking secrets (DB creds, cloud keys, etc.).
+const SAFE_ENV_PREFIXES = [
+	"PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "LC_",
+	"XDG_", "TMPDIR", "TEMP", "TMP",
+	// Provider API keys — child pi needs these to authenticate
+	"OPENAI_", "ANTHROPIC_", "GOOGLE_", "MISTRAL_", "COHERE_",
+	"GROQ_", "TOGETHER_", "FIREWORKS_", "DEEPSEEK_", "XAI_",
+	"AZURE_", "AWS_ACCESS_KEY_ID", "AWS_REGION", "AWS_DEFAULT_REGION",
+	"OLLAMA_", "LMSTUDIO_",
+	// picopi / pi
+	"PI_", "PICOPI_", "NODE_", "BUN_",
 ];
+const SAFE_ENV_EXACT = new Set(["HOME", "PATH", "USER", "SHELL", "TERM"]);
 
+let cachedSanitizedEnv: NodeJS.ProcessEnv | null = null;
 function sanitizeEnv(): NodeJS.ProcessEnv {
+	if (cachedSanitizedEnv) return cachedSanitizedEnv;
 	const env: Record<string, string> = {};
 	for (const [k, v] of Object.entries(process.env)) {
 		if (v === undefined) continue;
 		const upper = k.toUpperCase();
-		if (SENSITIVE_ENV_PREFIXES.some((p) => upper.startsWith(p))) continue;
-		env[k] = v;
+		if (SAFE_ENV_EXACT.has(upper) || SAFE_ENV_PREFIXES.some((p) => upper.startsWith(p))) {
+			env[k] = v;
+		}
 	}
+	cachedSanitizedEnv = env;
 	return env;
 }
 
@@ -508,21 +515,19 @@ async function runAgent(
 			const code = await new Promise<number>((resolve) => {
 				const inv = piInvocation(args);
 				const childDepth = Number(process.env[DEPTH_ENV] ?? "0") + 1;
-				let proc: ReturnType<typeof spawn>;
-
-				// Register abort handler before spawn to avoid TOCTOU race.
-				const killOnAbort = () => { aborted = true; proc?.kill("SIGTERM"); setTimeout(() => proc && !proc.killed && proc.kill("SIGKILL"), 4000); };
-				if (signal) {
-					signal.aborted ? killOnAbort() : signal.addEventListener("abort", killOnAbort, { once: true });
-				}
-
-				proc = spawn(inv.command, inv.args, {
+				const proc = spawn(inv.command, inv.args, {
 					cwd: defaultCwd,
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
 					env: { ...sanitizeEnv(), [DEPTH_ENV]: String(childDepth), PICOPI_ACTIVE_PRESET: getActivePreset() },
 				});
 				let buf = "";
+
+				// Register abort handler after spawn (proc is always valid here).
+				const killOnAbort = () => { aborted = true; proc.kill("SIGTERM"); setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000); };
+				if (signal) {
+					signal.aborted ? killOnAbort() : signal.addEventListener("abort", killOnAbort, { once: true });
+				}
 
 				// Per-process watchdog — only mark as stuck on the first
 				// attempt; retries show "retrying" via trackProgress above.
@@ -571,16 +576,22 @@ async function runAgent(
 					for (const l of lines) onLine(l);
 				});
 				proc.stderr.on("data", (d) => { base.stderr += d.toString(); });
+				// Safety: resolve after 2× effective timeout to prevent hanging forever.
+				let resolved = false;
+				const safeResolve = (code: number) => { if (!resolved) { resolved = true; resolve(code); } };
+				const hangTimer = setTimeout(() => safeResolve(1), effectiveTimeout * 2 * 1000);
+
 				proc.on("close", (c) => {
+					clearTimeout(hangTimer);
 					if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
 					if (buf.trim()) onLine(buf);
-					resolve(c ?? 0);
+					safeResolve(c ?? 0);
 				});
 				proc.on("error", () => {
+					clearTimeout(hangTimer);
 					if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
-					resolve(1);
+					safeResolve(1);
 				});
-
 
 			});
 
@@ -607,12 +618,13 @@ async function runAgent(
 		}
 
 		trackComplete(statusId, false);
-		return lastResult!;
+		return lastResult ?? { agent: name, task, exitCode: 1, messages: [], stderr: "No models available for this agent." };
 	} catch (e) {
 		trackComplete(statusId, false);
 		throw e;
 	} finally {
 		try { if (promptDir) fs.rmSync(promptDir, { recursive: true, force: true }); } catch {}
+		cachedSanitizedEnv = null; // allow GC
 	}
 }
 

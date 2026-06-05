@@ -51,16 +51,23 @@ function stripComments(o: unknown): unknown {
 	return o;
 }
 
-let cache: { file: string; mtime: number; cfg: PicopiConfig } | null = null;
+let cache: { file: string; mtime: number; cfg: PicopiConfig; checkedAt: number } | null = null;
+const CACHE_TTL_MS = 5000;
 
 export function loadConfig(): PicopiConfig {
 	const p = configFilePath();
 	if (!p) return {};
 	try {
+		const now = Date.now();
+		// Skip statSync if cache is fresh enough (TTL-based).
+		if (cache?.file === p && now - cache.checkedAt < CACHE_TTL_MS) return cache.cfg;
 		const { mtimeMs } = fs.statSync(p);
-		if (cache?.file === p && cache.mtime === mtimeMs) return cache.cfg;
+		if (cache?.file === p && cache.mtime === mtimeMs) {
+			cache.checkedAt = now;
+			return cache.cfg;
+		}
 		const cfg = stripComments(JSON.parse(fs.readFileSync(p, "utf-8"))) as PicopiConfig;
-		cache = { file: p, mtime: mtimeMs, cfg };
+		cache = { file: p, mtime: mtimeMs, cfg, checkedAt: now };
 		return cfg;
 	} catch (err) {
 		// Warn when the file exists but can't be parsed (syntax error, etc.).

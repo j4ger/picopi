@@ -29,6 +29,7 @@ Creates ~/.local/bin/picopi launcher and seeds config in
 Config files are seeded once and never overwritten.
 Your existing pi is not touched.
 
+Note: the launcher bakes in the repo path; if you move the repo, re-run install.
 Docs: https://github.com/j4ger/picopi#quickstart
 Uninstall: rm ~/.local/bin/picopi && rm -rf ~/.config/picopi
 EOF
@@ -80,6 +81,8 @@ fi
 [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
 
 # ── generate launcher ─────────────────────────────────────────────────────────
+# Note: the launcher embeds $repo as an absolute path. If the repo is moved,
+# re-run install.sh to regenerate the launcher.
 mkdir -p "$bindir"
 launcher="$bindir/picopi"
 cat > "$launcher" <<LAUNCHER
