@@ -150,7 +150,7 @@ export function setupFooter(pi: ExtensionAPI): void {
 						const fbProvider = fb.includes("/") ? fb.split("/")[0] : "";
 						const fbId = fb.includes("/") ? fb.split("/").pop()! : fb;
 						// Show original model + fallback provider/model, compact.
-						rightPlain = fbProvider ? `${modelName} → fb:${fbProvider}/${fbId}` : `${modelName} → fb:${fbId}`;
+						rightPlain = fbProvider ? `${modelName} ⤵ ${fbProvider}/${fbId}` : `${modelName} ⤵ ${fbId}`;
 						rightColor = "warning";
 					}
 					if (!state.fallbackTo && ctx.model?.reasoning) {
