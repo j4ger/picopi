@@ -23,22 +23,11 @@
         in
         {
           default = pkgs.writeShellScriptBin "picopi" ''
-            set -euo pipefail
-
-            dir="''${PICOPI_HOME:-''${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
-            mkdir -p "$dir"
-
-            [ -e "$dir/settings.json" ] || cp ${self}/agent/settings.json "$dir/settings.json"
-            [ -e "$dir/config.json" ] || cp ${self}/agent/config.json "$dir/config.json"
-            [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
-
-            export PI_CODING_AGENT_DIR="$dir"
-            exec ${pkgs.lib.getExe piPkg} \
-              --extension ${self}/src \
-              --prompt-template ${self}/agent/prompts \
-              --theme ${self}/agent/themes \
-              --append-system-prompt ${self}/agent/AGENTS.md \
-              "$@"
+            exec env \
+              PICOPI_SRC=${self} \
+              PICOPI_PI_BIN=${pkgs.lib.getExe piPkg} \
+              PICOPI_UPDATE_HINT="Nix install: update with 'nix profile upgrade picopi' (or 'nix run --refresh')." \
+              ${pkgs.bash}/bin/bash ${self}/scripts/picopi-launch.sh "$@"
           '';
         }
       );
