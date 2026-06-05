@@ -18,8 +18,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ── --help ────────────────────────────────────────────────────────────────────
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  echo -e "$H picopi — opinionated pi setup"
   cat <<EOF
-${H} picopi — opinionated pi setup
 
 Usage: ./scripts/install.sh [--help]
 

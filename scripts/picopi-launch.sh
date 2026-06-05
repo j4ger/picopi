@@ -18,13 +18,11 @@ case "${1:-}" in
     if [ -n "${PICOPI_UPDATE_CMD:-}" ]; then exec "$PICOPI_UPDATE_CMD" "${@:2}"; fi
     echo -e "${H:-⬡} ${PICOPI_UPDATE_HINT:-To update, reinstall picopi.}"; exit 0 ;;
   -h | --help)
-    cat <<EOF
-${H:-⬡} picopi — opinionated pi setup
-
-Usage: picopi [--update [--no-pi]] [--help] [pi-options...]
-
-All other options are forwarded to pi; see 'pi --help'.
-EOF
+    echo -e "${H:-⬡} picopi — opinionated pi setup"
+    echo
+    echo "Usage: picopi [--update [--no-pi]] [--help] [pi-options...]"
+    echo
+    echo "All other options are forwarded to pi; see 'pi --help'."
     exit 0 ;;
 esac
 
