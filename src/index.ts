@@ -50,10 +50,18 @@ export default function (pi: ExtensionAPI) {
 	// --- /preset command ----------------------------------------------------------
 	pi.registerCommand("preset", {
 		description: "Switch alias preset (interactive picker, or pass a name)",
+		getArgumentCompletions: (prefix) => {
+			const names = ["default", ...listPresets(loadConfig())];
+			const p = prefix.trim().toLowerCase();
+			return names
+				.filter((n) => n.toLowerCase().startsWith(p))
+				.map((n) => ({ value: n, label: n }));
+		},
 		handler: async (args, ctx) => {
 			const cfg = loadConfig();
 			const sortedPresets = listPresets(cfg);
 			const current = getActivePreset();
+			const prevThinking = pi.getThinkingLevel();
 
 			let name = args.trim();
 			if (!name) {
@@ -79,9 +87,11 @@ export default function (pi: ExtensionAPI) {
 			setActivePreset(target);
 			const res = await applyOrchestrator(pi, ctx, cfg);
 			if (!res.ok) {
-				// Roll back so we don't leave the session pointing at an unresolved chain.
+				// Roll back so we don't leave the session pointing at an unresolved chain,
+				// and restore the exact thinking level the user had before the switch.
 				setActivePreset(prev);
 				await applyOrchestrator(pi, ctx, cfg);
+				pi.setThinkingLevel(prevThinking);
 				ctx.ui.notify(`Preset "${target || "default"}" not applied: ${res.detail ?? "orchestrator unresolved"}`, "error");
 				return;
 			}
