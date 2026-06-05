@@ -596,7 +596,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 		parameters: Params,
 		promptSnippet: "Delegate scoped work to specialist subagents (planner/explorer/fixer/auditor/web-searcher)",
 		promptGuidelines: [
-			"Use the subagent tool to offload exploration, planning, fixing, auditing, or web research so the main context stays focused.",
+			"Delegate by default: send heavy reasoning to planner, recon to explorer, implementation to fixer, review to auditor, research to web-searcher — keep the main context focused.",
+			"Give each fixer ONE small, concrete task (~1-3 files, a single concern). Oversized tasks stall the fixer; split them or run planner first.",
+			"Run independent tasks in parallel via { tasks: [...] }.",
 		],
 
 		async execute(_id, params, signal, onUpdate, ctx) {

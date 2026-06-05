@@ -72,6 +72,10 @@ picopi uses pi's auth. See [pi's provider docs](https://github.com/earendil-work
 ## Subagents
 
 Delegate scoped work to specialist agents so the main context stays focused.
+The orchestrator runs on a small/cheap model and **coordinates**: it delegates
+heavy reasoning to `planner`, splits the plan into small fixer-sized tasks, and
+runs independent `fixer`s in parallel. This keeps cost down and avoids handing
+the small `fixer` model tasks too big to finish before its timeout.
 
 | Agent | Purpose |
 |-------|---------|
@@ -120,7 +124,7 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
 
 ```jsonc
 {
-  "orchestrator": { "model": "pro", "thinking": "high" },
+  "orchestrator": { "model": "flash", "thinking": "medium" },
 
   "agents": {
     "planner":      { "model": "pro",   "thinking": "xhigh",  "timeout": 600 },
@@ -140,10 +144,12 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
 }
 ```
 
+- **Roles** — `orchestrator` and each `agent` map to an alias + `thinking` + `timeout`.
 - **Aliases** — ordered fallback chain. First working key wins.
 - **Presets** — alias overrides using `alias@preset` naming. Switch at runtime with `/preset`.
 - **Thinking** — `off` → `minimal` → `low` → `medium` → `high` → `xhigh`
 - **Timeout** — seconds before watchdog kills a stuck agent
+- **Compaction** — optional cheaper model for context summarization; falls back to the session model if unset/unavailable.
 
 ### Runtime fallback
 
@@ -219,7 +225,6 @@ Declare providers in `~/.config/picopi/models.json`, then reference as
 src/              # Extension source
 agent/            # Seeded defaults (config, settings, agents, themes)
   themes/picopi.json   # Ayu Dark-inspired theme
-examples/         # Config templates
 scripts/          # install.sh
 nix/              # Nix builder
 flake.nix

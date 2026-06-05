@@ -84,7 +84,7 @@ cat <<EOF
 
 Your config lives in: $dir/
   config.json    picopi roles/aliases — map pro/flash to models you can use
-  models.json    providers/models (see examples/models.example.json)
+  models.json    providers/models (see pi's models docs)
   settings.json  pi settings
 picopi source stays in the repo: $repo (update with 'git pull')
 
