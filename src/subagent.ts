@@ -769,6 +769,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 				});
 
 				let completed = 0;
+				let okTally = 0;
+				let stuckTally = 0;
 				const startMs = Date.now();
 
 				const cfg = loadConfig();
@@ -776,21 +778,37 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const results = await mapLimit(params.tasks!, concurrency, async (t, i) => {
 					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout);
 					completed++;
+					if (!failed(result)) okTally++;
+					if (result.stuck) stuckTally++;
 
 					onUpdate?.({
 						content: [{ type: "text", text: `${completed}/${totalPanes} done - ${t.agent} ${failed(result) ? "failed" : "ok"}` }],
 						details: { completed, total: totalPanes },
 					});
 
-					pi.sendMessage({
-						customType: "subagent-complete",
-						content: `${t.agent} ${failed(result) ? "failed" : "done"}`,
-						display: true,
-						details: {
+					// The last task to finish also carries the batch summary, so we don't
+					// emit a separate (redundant) aggregate completion message/turn.
+					const isLast = completed === totalPanes;
+					const label = `${t.agent} ${failed(result) ? "failed" : "done"}`;
+					const batchSummary = stuckTally > 0 ? `${okTally} ok, ${stuckTally} timeout` : `${okTally}/${totalPanes} ok`;
+					const details: SubagentCompleteDetails = isLast
+						? {
+							agent: params.tasks!.map((x) => x.agent).join(", "),
+							task: `${totalPanes} parallel tasks`,
+							ok: okTally === totalPanes,
+							durationMs: Date.now() - startMs,
+							preview: okTally === totalPanes ? `All ${totalPanes} tasks completed` : `${totalPanes - okTally} failed`,
+						}
+						: {
 							agent: t.agent, task: t.task, ok: !failed(result),
 							model: result.model, durationMs: Date.now() - startMs,
 							preview: outputPreview(output(result)),
-						} satisfies SubagentCompleteDetails,
+						};
+					pi.sendMessage({
+						customType: "subagent-complete",
+						content: isLast ? `${label} · batch ${batchSummary}` : label,
+						display: true,
+						details,
 					}, { deliverAs: "steer" });
 
 					persistResult(pi, result, Date.now() - startMs, sids[i]);
@@ -799,20 +817,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 				const ok = results.filter((r) => !failed(r)).length;
 				const stuckCount = results.filter(r => r.stuck).length;
-				const elapsed = Date.now() - startMs;
 				const summary = stuckCount > 0 ? `${ok} ok, ${stuckCount} timeout` : `${ok}/${results.length} ok`;
-
-				pi.sendMessage({
-					customType: "subagent-complete",
-					content: `parallel ${summary}`,
-					display: true,
-					details: {
-						agent: results.map((r) => r.agent).join(", "),
-						task: `${results.length} parallel tasks`,
-						ok: ok === results.length, durationMs: elapsed,
-						preview: ok === results.length ? `All ${results.length} tasks completed` : `${results.length - ok} failed`,
-					} satisfies SubagentCompleteDetails,
-				});
 
 				const text = results.map((r) => `### [${r.agent}] ${r.stuck ? "timeout" : failed(r) ? "failed" : "ok"}\n\n${capOutput(output(r))}`).join("\n\n---\n\n");
 				return { content: [{ type: "text", text: `Parallel: ${summary}\n\n${text}` }], details: { results } };
