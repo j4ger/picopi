@@ -144,19 +144,24 @@ export function setupFooter(pi: ExtensionAPI): void {
 					// ---- right side: model NAME + thinking ----------------------
 					const modelName = ctx.model?.name || ctx.model?.id || "no-model";
 					let rightPlain = modelName;
+					let rightColor: "dim" | "warning" = "dim";
 					if (state.fallbackTo) {
-						const short = state.fallbackTo.includes("/") ? state.fallbackTo.split("/").pop()! : state.fallbackTo;
-						rightPlain = `${modelName} → ${short} · fallback`;
+						const fb = state.fallbackTo;
+						const fbProvider = fb.includes("/") ? fb.split("/")[0] : "";
+						const fbId = fb.includes("/") ? fb.split("/").pop()! : fb;
+						// Show original model + fallback provider/model, compact.
+						rightPlain = fbProvider ? `${modelName} → fb:${fbProvider}/${fbId}` : `${modelName} → fb:${fbId}`;
+						rightColor = "warning";
 					}
-					if (ctx.model?.reasoning) {
+					if (!state.fallbackTo && ctx.model?.reasoning) {
 						const level = pi.getThinkingLevel() || "off";
-						rightPlain = level === "off" ? `${rightPlain} • thinking off` : `${rightPlain} • ${level}`;
+						rightPlain = level === "off" ? `${modelName} • thinking off` : `${modelName} • ${level}`;
 					}
 					if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
 						const withProvider = `(${ctx.model.provider}) ${rightPlain}`;
 						if (leftWidth + 2 + visibleWidth(withProvider) <= width) rightPlain = withProvider;
 					}
-					const right = state.fallbackTo ? theme.fg("warning", rightPlain) : theme.fg("dim", rightPlain);
+					const right = theme.fg(rightColor, rightPlain);
 					const rightWidth = visibleWidth(right);
 
 					// ---- compose stats line -------------------------------------

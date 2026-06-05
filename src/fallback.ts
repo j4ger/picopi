@@ -82,9 +82,13 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 	}
 
 	currentModelSpec = nextSpec;
+	errorsForModel = 0;
+	// After a fallback switch, pi doesn't retry internally — each message_end
+	// is a fresh attempt. Set threshold to 1 so the next error triggers the
+	// next fallback immediately, allowing the chain to walk through quickly.
+	retryThreshold = 1;
 
-	const shortName = nextSpec.includes("/") ? nextSpec.split("/").pop()! : nextSpec;
-	ctx.ui.notify(`falling back to ${shortName}`, "warning");
+	ctx.ui.notify(`falling back to ${nextSpec}`, "warning");
 
 	setPicopiFooter({ fallbackTo: nextSpec });
 
