@@ -85,7 +85,7 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 
 	ctx.ui.notify(`⬇ ${reason}: ${nextSpec}`, "info");
 
-	setPicopiFooter({ note: `fallback → ${nextSpec}`, tone: "warning" });
+	setPicopiFooter({ fallbackTo: nextSpec });
 
 	// pi.setModel() causes pi to retry the pending request with the new model.
 }

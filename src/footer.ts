@@ -26,6 +26,8 @@ export interface PicopiFooterState {
 	note?: string;
 	/** Tone for the note line. */
 	tone?: "warning" | "error";
+	/** Active fallback model spec — shown inline next to model name. */
+	fallbackTo?: string;
 }
 
 const state: PicopiFooterState = {};
@@ -37,10 +39,11 @@ export function setPicopiFooter(next: Partial<PicopiFooterState>): void {
 	requestRender?.();
 }
 
-/** Clear the warning/note line (back to the happy path). */
+/** Clear the warning/note line and fallback indicator (back to the happy path). */
 export function clearPicopiFooterNote(): void {
 	state.note = undefined;
 	state.tone = undefined;
+	state.fallbackTo = undefined;
 	requestRender?.();
 }
 
@@ -141,15 +144,19 @@ export function setupFooter(pi: ExtensionAPI): void {
 					// ---- right side: model NAME + thinking ----------------------
 					const modelName = ctx.model?.name || ctx.model?.id || "no-model";
 					let rightPlain = modelName;
+					if (state.fallbackTo) {
+						const short = state.fallbackTo.includes("/") ? state.fallbackTo.split("/").pop()! : state.fallbackTo;
+						rightPlain = `${modelName} → ${short}`;
+					}
 					if (ctx.model?.reasoning) {
 						const level = pi.getThinkingLevel() || "off";
-						rightPlain = level === "off" ? `${modelName} • thinking off` : `${modelName} • ${level}`;
+						rightPlain = level === "off" ? `${rightPlain} • thinking off` : `${rightPlain} • ${level}`;
 					}
 					if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
 						const withProvider = `(${ctx.model.provider}) ${rightPlain}`;
 						if (leftWidth + 2 + visibleWidth(withProvider) <= width) rightPlain = withProvider;
 					}
-					const right = theme.fg("dim", rightPlain);
+					const right = state.fallbackTo ? theme.fg("warning", rightPlain) : theme.fg("dim", rightPlain);
 					const rightWidth = visibleWidth(right);
 
 					// ---- compose stats line -------------------------------------
