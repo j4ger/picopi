@@ -146,7 +146,7 @@ export function setupFooter(pi: ExtensionAPI): void {
 					let rightPlain = modelName;
 					if (state.fallbackTo) {
 						const short = state.fallbackTo.includes("/") ? state.fallbackTo.split("/").pop()! : state.fallbackTo;
-						rightPlain = `${modelName} → ${short}`;
+						rightPlain = `${modelName} → ${short} · fallback`;
 					}
 					if (ctx.model?.reasoning) {
 						const level = pi.getThinkingLevel() || "off";

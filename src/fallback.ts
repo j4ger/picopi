@@ -83,7 +83,8 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 
 	currentModelSpec = nextSpec;
 
-	ctx.ui.notify(`⬇ ${reason}: ${nextSpec}`, "info");
+	const shortName = nextSpec.includes("/") ? nextSpec.split("/").pop()! : nextSpec;
+	ctx.ui.notify(`falling back to ${shortName}`, "warning");
 
 	setPicopiFooter({ fallbackTo: nextSpec });
 
