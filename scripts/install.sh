@@ -84,7 +84,7 @@ cat <<EOF
 
 Your config lives in: $dir/
   config.json    picopi roles/aliases — map pro/flash to models you can use
-  models.json    providers/models (see pi's models docs)
+  models.json    custom providers/gateways only (built-ins just need /login)
   settings.json  pi settings
 picopi source stays in the repo: $repo (update with 'git pull')
 
@@ -102,7 +102,8 @@ fi
 
 cat <<EOF
 
-Then add a provider/model + key (env vars or 'picopi login'; see pi's provider docs).
+Then run 'picopi' and use /login to authenticate a provider (OAuth or API key;
+see pi's provider docs). Built-in providers need no models.json.
 
 Uninstall: rm $launcher && rm -rf $dir
 EOF

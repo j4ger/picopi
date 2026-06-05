@@ -37,13 +37,13 @@ export async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext,
 	const resolved = await resolveRoleModel(registry(ctx), cfg, role.model);
 
 	if (!resolved) {
-		setPicopiFooter({ role: role.model, note: `no model for "${role.model}" — using session default`, tone: "warning" });
+		setPicopiFooter({ role: role.model, note: `no authenticated model for "${role.model}" — run /login, then /picopi`, tone: "warning" });
 		return { ok: false, detail: `no working model for "${role.model}"` };
 	}
 
 	const ok = await pi.setModel(resolved.model as any);
 	if (!ok) {
-		setPicopiFooter({ role: role.model, note: `auth failed for ${resolved.spec}`, tone: "warning" });
+		setPicopiFooter({ role: role.model, note: `auth failed for ${resolved.spec} — run /login`, tone: "warning" });
 		return { ok: false, detail: `auth failed for ${resolved.spec}` };
 	}
 	if (role.thinking) pi.setThinkingLevel(role.thinking);

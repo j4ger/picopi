@@ -31,24 +31,34 @@ git clone https://github.com/j4ger/picopi && cd picopi
 ./scripts/install.sh
 ```
 
+### Authenticate
+
+picopi uses pi's auth. Launch it and log in to a provider:
+
+```bash
+picopi          # or: nix run github:j4ger/picopi --accept-flake-config
+```
+
+Inside picopi, run `/login` and pick your provider (OAuth or API key). Built-in
+providers (Anthropic, Google, OpenAI, …) work with just a login — no
+`models.json` needed. See [pi's provider docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) for env-var keys and OAuth details.
+
 ### Configure
 
-Edit `~/.config/picopi/config.json`:
+The installer seeds a full `~/.config/picopi/config.json` — **edit it in place**.
+It ships with `pro` and `flash` aliases pointing at sensible defaults:
 
 ```jsonc
 {
   "aliases": {
-    "pro":   ["anthropic/claude-sonnet-4-5"],
-    "flash": ["anthropic/claude-haiku-4-5"]
+    "pro":   ["google/gemini-2.5-pro",   "anthropic/claude-opus-4-5"],
+    "flash": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5"]
   }
 }
 ```
 
-Run `/picopi` to verify resolved aliases.
-
-### Authenticate
-
-picopi uses pi's auth. See [pi's provider docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) for API keys and OAuth.
+Point these at models you can actually use (first entry with a working key
+wins). Then run `/picopi` to verify every role resolves.
 
 ---
 
@@ -135,8 +145,8 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
   },
 
   "aliases": {
-    "pro":   ["anthropic/claude-sonnet-4-5", "google/gemini-2.5-pro"],
-    "flash": ["anthropic/claude-haiku-4-5",  "google/gemini-2.5-flash"]
+    "pro":   ["google/gemini-2.5-pro",   "anthropic/claude-opus-4-5"],
+    "flash": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5"]
   },
 
   "compaction": { "model": "flash" },
@@ -171,11 +181,11 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 ```jsonc
 {
   "aliases": {
-    "pro":        ["anthropic/claude-opus-4",   "google/gemini-2.5-pro"],
+    "pro":        ["google/gemini-2.5-pro",   "anthropic/claude-opus-4-5"],
     "pro@fast":   ["google/gemini-2.5-flash"],
     "pro@local":  ["ollama/llama3.3:70b"],
 
-    "flash":      ["anthropic/claude-haiku-4",  "google/gemini-2.5-flash"],
+    "flash":      ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5"],
     "flash@fast": ["google/gemini-2.5-flash"],
     "flash@local":["ollama/llama3.3:70b"]
   }
@@ -199,8 +209,10 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 
 ### Custom models / gateways
 
-Declare providers in `~/.config/picopi/models.json`, then reference as
-`provider/model` in aliases. See
+Built-in providers (Anthropic, Google, OpenAI, …) need only `/login`. Use
+`models.json` **only** for custom providers or gateways: declare them in
+`~/.config/picopi/models.json`, then reference as `provider/model` in aliases.
+See
 [pi's models docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md).
 
 ### Nix flake
