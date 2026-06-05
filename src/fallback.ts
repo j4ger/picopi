@@ -7,20 +7,22 @@
  * which is left to pi's compaction.
  *
  * Failed attempts surface as an errored assistant `message_end` — the same
- * signal pi's own retry loop keys off. Switching the model there makes pi's
- * retry continuation (and the next turn) use the fallback model, walking the
- * chain on each successive failure.
+ * signal pi's own retry loop keys off. We count consecutive errors per model
+ * and only switch once pi has used up its retry budget on the current model
+ * (threshold = pi's own `retry.maxRetries`, read from its settings). We switch
+ * on the *last* retry-eligible error so pi's final retry continuation picks up
+ * the fallback model within the same turn, walking the chain on each exhaustion.
  *
  * No timeout-based fallback — pi's own retry mechanism handles transient
- * errors and slow responses. We only act on explicit failure signals.
- * (auto_retry_* are NOT forwarded to extensions, so we can't use them.)
+ * errors and slow responses. We only act after it gives up.
+ * (auto_retry_* are NOT forwarded to extensions, so we count message_end instead.)
  *
  * Inspired by pi-retry-fallback-model (99degree / GitHub issue #4328).
  *
  * Disable with: PI_FALLBACK_DISABLE=true
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isContextOverflow } from "@earendil-works/pi-ai";
 import { loadConfig, resolveChain, type PicopiConfig } from "./config.ts";
 import { setPicopiFooter } from "./footer.ts";
@@ -28,6 +30,10 @@ import { setPicopiFooter } from "./footer.ts";
 let currentModelSpec: string = "";
 let currentAlias: string = "";
 let enabled = true;
+let errorsForModel = 0;
+// Per-model error budget before falling back, cached from pi's retry.maxRetries
+// at session_start (0 = fall back immediately, i.e. retry disabled).
+let retryThreshold = 0;
 
 async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig, reason: string) {
 	if (!currentAlias) return;
@@ -117,6 +123,7 @@ export function setupFallback(pi: ExtensionAPI) {
 	// ── Track current model ───────────────────────────────────────────────
 	pi.on("model_select", async (event) => {
 		currentModelSpec = `${event.model.provider}/${event.model.id}`;
+		errorsForModel = 0; // fresh retry budget for the new model
 	});
 
 	// ── Load config, track alias, announce the chain ──────────────────────
@@ -130,6 +137,10 @@ export function setupFallback(pi: ExtensionAPI) {
 			enabled = false;
 			return;
 		}
+
+		// Cache pi's own retry budget so we don't re-read settings on every error.
+		const retry = SettingsManager.create(ctx.cwd).getRetrySettings();
+		retryThreshold = retry.enabled ? retry.maxRetries : 0;
 
 		const chain = resolveChain(cfg, currentAlias);
 		if (chain.length > 1) {
@@ -149,12 +160,20 @@ export function setupFallback(pi: ExtensionAPI) {
 	//    provider might handle. Skip context overflow — pi handles that via
 	//    compaction. (stopReason "error" already excludes user aborts.)
 	pi.on("message_end", async (event, ctx) => {
-		if (!enabled) return;
-		if (!currentAlias) return;
+		if (!enabled || !currentAlias) return;
 
 		const m = event.message as any;
-		if (m.role !== "assistant" || m.stopReason !== "error") return;
+		if (m.role !== "assistant") return;
+		if (m.stopReason !== "error") {
+			errorsForModel = 0;
+			return;
+		}
 		if (isContextOverflow(m, ctx.model?.contextWindow)) return;
+
+		// Let pi exhaust its own retries on this model first. Switch only on the
+		// last retry-eligible error (>= maxRetries) so pi's final retry continuation
+		// still uses the fallback model this turn. (retry disabled => threshold 0.)
+		if (++errorsForModel < retryThreshold) return;
 
 		await tryFallback(pi, ctx, loadConfig(), "Upstream error");
 	});
