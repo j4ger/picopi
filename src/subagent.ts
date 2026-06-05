@@ -91,6 +91,11 @@ interface RunResult {
 	stuck?: boolean;
 }
 
+interface TranscriptEntry {
+	kind: "assistant" | "tool-call" | "tool-done";
+	text: string;
+}
+
 interface SubagentStatus {
 	id: string;
 	agent: string;
@@ -102,6 +107,7 @@ interface SubagentStatus {
 	endTime?: number;
 	lastActivity?: number;
 	timeout?: number;
+	transcript?: TranscriptEntry[];
 }
 
 interface SubagentCompleteDetails {
@@ -114,6 +120,8 @@ interface SubagentCompleteDetails {
 }
 
 interface SubagentResultEntry {
+	id?: string;
+	transcript?: TranscriptEntry[];
 	agent: string;
 	task: string;
 	ok: boolean;
@@ -126,6 +134,25 @@ interface SubagentResultEntry {
 }
 
 const RESULT_OUTPUT_CAP = 4096;
+const TRANSCRIPT_MAX_ENTRIES = 200;
+const TRANSCRIPT_PERSIST_ENTRIES = 80;
+const TRANSCRIPT_TEXT_CAP = 2000;
+// Bound the durable transcript so the session file can't balloon across many runs.
+const TRANSCRIPT_PERSIST_BYTES = 16384;
+
+/** Keep the most recent transcript entries within a byte budget for persistence. */
+function trimTranscriptForPersist(t: TranscriptEntry[] | undefined): TranscriptEntry[] {
+	if (!t || !t.length) return [];
+	const tail = t.slice(-TRANSCRIPT_PERSIST_ENTRIES);
+	let budget = TRANSCRIPT_PERSIST_BYTES;
+	const out: TranscriptEntry[] = [];
+	for (let i = tail.length - 1; i >= 0; i--) {
+		budget -= Buffer.byteLength(tail[i].text, "utf8");
+		if (budget < 0 && out.length) break;
+		out.unshift(tail[i]);
+	}
+	return out;
+}
 
 // Global state
 
@@ -149,8 +176,10 @@ function capForPersist(text: string): string {
 	return text.slice(0, RESULT_OUTPUT_CAP) + "\n\n[truncated for session storage]";
 }
 
-function persistResult(pi: ExtensionAPI, r: RunResult, durationMs: number) {
+function persistResult(pi: ExtensionAPI, r: RunResult, durationMs: number, id: string) {
 	pi.appendEntry("subagent-result", {
+		id,
+		transcript: trimTranscriptForPersist(activeSubagents.get(id)?.transcript),
 		agent: r.agent,
 		task: r.task,
 		ok: !failed(r),
@@ -359,9 +388,17 @@ function updateStatusPanel(context?: any) {
 	}
 }
 
+const pushTranscript = (id: string, kind: TranscriptEntry["kind"], text: string) => {
+	const sub = activeSubagents.get(id);
+	if (!sub || !text) return;
+	const t = sub.transcript ?? (sub.transcript = []);
+	t.push({ kind, text: text.length > TRANSCRIPT_TEXT_CAP ? text.slice(0, TRANSCRIPT_TEXT_CAP) + "…" : text });
+	if (t.length > TRANSCRIPT_MAX_ENTRIES) t.splice(0, t.length - TRANSCRIPT_MAX_ENTRIES);
+};
+
 const trackAgent = (id: string, agent: string, task: string, timeout?: number) => {
 	const now = Date.now();
-	const sub: SubagentStatus = { id, agent, task, status: "running", startTime: now, lastActivity: now, timeout };
+	const sub: SubagentStatus = { id, agent, task, status: "running", startTime: now, lastActivity: now, timeout, transcript: [] };
 	activeSubagents.set(id, sub);
 	updateStatusPanel();
 };
@@ -550,6 +587,11 @@ async function runAgent(
 
 					if (ev.type === "tool_execution_start") {
 						trackProgress(statusId, undefined, ev.toolName);
+						pushTranscript(statusId, "tool-call", ev.toolName);
+					}
+
+					if (ev.type === "tool_execution_end") {
+						pushTranscript(statusId, "tool-done", ev.toolName ?? "done");
 					}
 
 					if ((ev.type === "message_end" || ev.type === "tool_result_end") && ev.message) {
@@ -559,6 +601,8 @@ async function runAgent(
 							if (!base.model && msg.model) base.model = msg.model;
 							if (msg.stopReason) base.stopReason = msg.stopReason;
 							if (msg.errorMessage) base.errorMessage = msg.errorMessage;
+							const text = msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("");
+							if (text) pushTranscript(statusId, "assistant", text);
 						}
 						const turns = base.messages.filter(m => m.role === "assistant").length;
 						const label = attempt > 0
@@ -749,7 +793,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						} satisfies SubagentCompleteDetails,
 					}, { deliverAs: "steer" });
 
-					persistResult(pi, result, Date.now() - startMs);
+					persistResult(pi, result, Date.now() - startMs, sids[i]);
 					return result;
 				});
 
@@ -794,7 +838,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					} satisfies SubagentCompleteDetails,
 				});
 
-				persistResult(pi, r, Date.now() - startMs);
+				persistResult(pi, r, Date.now() - startMs, sid);
 
 				if (isError) {
 					const reason = r.stuck ? "timeout: provider stopped responding" : `${r.stopReason || "failed"}: ${capOutput(output(r))}`;
@@ -813,6 +857,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 					} satisfies SubagentCompleteDetails,
 				});
 				pi.appendEntry("subagent-result", {
+					id: sid,
+					transcript: trimTranscriptForPersist(activeSubagents.get(sid)?.transcript),
 					agent: params.agent!,
 					task: params.task!,
 					ok: false,
@@ -867,74 +913,242 @@ export function setupSubagent(pi: ExtensionAPI) {
 				return;
 			}
 			rebuildResults(ctx);
-			if (resultHistory.length === 0) {
-				ctx.ui.notify("No subagent results yet", "info");
+			if (activeSubagents.size === 0 && resultHistory.length === 0) {
+				ctx.ui.notify("No subagents yet", "info");
 				return;
 			}
-			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-				let selected = resultHistory.length - 1;
-				let expanded: number | null = null;
+			// Combined live + history inspector. Selection is keyed by a stable `key`
+			// (the subagent id) so an agent finishing mid-view doesn't shift the
+			// cursor when it migrates from activeSubagents to the persisted history.
+			interface InspectItem {
+				key: string;
+				agent: string;
+				subLabel: string;
+				running: boolean;
+				ok: boolean;
+				stuck: boolean;
+				model?: string;
+				durationMs: number;
+				transcript?: TranscriptEntry[];
+				output?: string;
+				errorMessage?: string;
+			}
+			const buildItems = (): InspectItem[] => {
+				const live = [...activeSubagents.values()];
+				const running = live
+					.filter((s) => s.status === "running" || s.status === "stuck")
+					.sort((a, b) => a.startTime - b.startTime);
+				const completedActive = live
+					.filter((s) => s.status === "done" || s.status === "failed")
+					.sort((a, b) => (a.endTime ?? 0) - (b.endTime ?? 0));
+				const activeIds = new Set(live.map((s) => s.id));
+				const histCompleted = resultHistory.filter((r) => !r.id || !activeIds.has(r.id));
+				const fromStatus = (s: SubagentStatus): InspectItem => ({
+					key: s.id,
+					agent: s.agent,
+					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : s.task,
+					running: s.status === "running" || s.status === "stuck",
+					ok: s.status === "done",
+					stuck: s.status === "stuck",
+					durationMs: (s.endTime ?? Date.now()) - s.startTime,
+					transcript: s.transcript,
+				});
+				const fromHist = (r: SubagentResultEntry): InspectItem => ({
+					key: r.id ?? `${r.timestamp}-${r.agent}`,
+					agent: r.agent,
+					subLabel: r.task,
+					running: false,
+					ok: r.ok,
+					stuck: r.stuck ?? false,
+					model: r.model,
+					durationMs: r.durationMs,
+					transcript: r.transcript,
+					output: r.output,
+					errorMessage: r.errorMessage,
+				});
+				return [...running.map(fromStatus), ...completedActive.map(fromStatus), ...histCompleted.map(fromHist)];
+			};
+
+			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+				let selectedKey: string | null = null;
+				let lastIndex = 0;
+				let initialized = false;
+				let expanded = false;
+				let scrollOffset = 0;
+				let atBottom = true;
+				// Captured during render so the (width-less) handleInput can clamp scrolling.
+				let lastMaxOffset = 0;
+				let lastViewportH = 10;
+
+				const glyph = (it: InspectItem): string =>
+					it.stuck ? theme.fg("warning", "!")
+						: it.running ? theme.fg("warning", "◐")
+							: it.ok ? theme.fg("success", "✓")
+								: theme.fg("error", "✗");
+
+				const transcriptLines = (it: InspectItem, innerW: number): string[] => {
+					const lines: string[] = [];
+					if (it.transcript && it.transcript.length) {
+						for (const e of it.transcript) {
+							if (e.kind === "assistant") {
+								for (const raw of e.text.split("\n")) lines.push(truncateToWidth(theme.fg("text", `  ${raw}`), innerW));
+							} else if (e.kind === "tool-call") {
+								lines.push(truncateToWidth(theme.fg("accent", `→ ${e.text}`), innerW));
+							} else {
+								lines.push(truncateToWidth(theme.fg("success", `• ${e.text}`), innerW));
+							}
+						}
+					} else if (it.output) {
+						for (const raw of it.output.split("\n")) lines.push(truncateToWidth(theme.fg("text", `  ${raw}`), innerW));
+					} else {
+						lines.push(theme.fg("dim", "  (no transcript recorded)"));
+					}
+					if (it.errorMessage) {
+						lines.push("");
+						lines.push(truncateToWidth(theme.fg("error", `  Error: ${it.errorMessage}`), innerW));
+					}
+					return lines;
+				};
+
+				// Self-refresh so running transcripts and elapsed times update live; a
+				// completion that lands while open is picked up via rebuildResults within 1s.
+				const interval = setInterval(() => { rebuildResults(ctx); tui.requestRender(); }, 1000);
+
 				return {
 					render(width: number): string[] {
 						const border = (s: string) => theme.fg("accent", s);
 						const innerW = Math.max(0, width - 2);
 						const hr = "─".repeat(innerW);
+						const rows = tui.terminal?.rows ?? 24;
+						const viewportH = Math.max(3, rows - 6);
+						lastViewportH = viewportH;
+						const row = (content: string): string => {
+							const clipped = truncateToWidth(content, innerW);
+							return border("│") + clipped + " ".repeat(Math.max(0, innerW - visibleWidth(clipped))) + border("│");
+						};
 						const out: string[] = [border("┌" + hr + "┐")];
-						out.push(border("│") + truncateToWidth(theme.fg("accent", " Subagent Results "), innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(theme.fg("accent", " Subagent Results ")))) + border("│"));
-						out.push(border("├" + hr + "┤"));
 
-						for (let i = 0; i < resultHistory.length; i++) {
-							const r = resultHistory[i];
-							const sel = i === selected;
-							const icon = r.ok ? theme.fg("success", "✓") : r.stuck ? theme.fg("warning", "!") : theme.fg("error", "✗");
-							const agent = theme.fg(sel ? "accent" : "muted", r.agent);
-							const dur = theme.fg("dim", formatDuration(r.durationMs));
-							const model = r.model ? theme.fg("dim", ` ${r.model}`) : "";
-							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
-							const line = truncateToWidth(`${prefix}${icon} ${agent}${model} ${dur}`, innerW);
-							out.push(border("│") + line + " ".repeat(Math.max(0, innerW - visibleWidth(line))) + border("│"));
-							const taskClip = r.task.length > innerW - 6 ? r.task.slice(0, innerW - 9) + "..." : r.task;
-							const taskLine = theme.fg("dim", `    ${taskClip}`);
-							out.push(border("│") + truncateToWidth(taskLine, innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(truncateToWidth(taskLine, innerW)))) + border("│"));
-
-							if (expanded === i) {
-								out.push(border("│") + " ".repeat(innerW) + border("│"));
-								const outputLines = r.output.split("\n");
-								for (const ol of outputLines.slice(0, 30)) {
-									const wrapped = truncateToWidth(theme.fg("text", `  ${ol}`), innerW);
-									out.push(border("│") + wrapped + " ".repeat(Math.max(0, innerW - visibleWidth(wrapped))) + border("│"));
-								}
-								if (outputLines.length > 30) {
-									const more = theme.fg("dim", `  … +${outputLines.length - 30} more lines`);
-									out.push(border("│") + truncateToWidth(more, innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(truncateToWidth(more, innerW)))) + border("│"));
-								}
-								if (r.errorMessage) {
-									out.push(border("│") + " ".repeat(innerW) + border("│"));
-									const err = theme.fg("error", `  Error: ${r.errorMessage}`);
-									out.push(border("│") + truncateToWidth(err, innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(truncateToWidth(err, innerW)))) + border("│"));
-								}
-							}
-
-							if (i < resultHistory.length - 1) {
-								out.push(border("│") + theme.fg("dim", "─".repeat(innerW)) + border("│"));
-							}
+						const items = buildItems();
+						if (items.length === 0) {
+							expanded = false;
+							out.push(row(theme.fg("accent", " Subagent Inspector ")));
+							out.push(border("├" + hr + "┤"));
+							out.push(row(theme.fg("dim", "  No subagents yet")));
+							out.push(border("└" + hr + "┘"));
+							out.push(truncateToWidth(theme.fg("dim", "  Esc close"), width));
+							return out;
 						}
 
+						if (!initialized) {
+							initialized = true;
+							const firstRunning = items.findIndex((i) => i.running);
+							const startIdx = firstRunning !== -1 ? firstRunning : items.length - 1;
+							selectedKey = items[startIdx].key;
+							lastIndex = startIdx;
+						}
+						let idx = items.findIndex((i) => i.key === selectedKey);
+						if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
+						selectedKey = items[idx].key;
+						lastIndex = idx;
+						const cur = items[idx];
+
+						if (expanded) {
+							const model = cur.model ? theme.fg("dim", ` ${cur.model}`) : "";
+							const status = cur.running ? theme.fg("warning", cur.stuck ? " · stuck" : " · running") : theme.fg("dim", " · done");
+							out.push(row(`${glyph(cur)} ${theme.fg("accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${status}`));
+							out.push(row(theme.fg("dim", `  ${cur.subLabel}`)));
+							out.push(border("├" + hr + "┤"));
+							const lines = transcriptLines(cur, innerW);
+							const maxOffset = Math.max(0, lines.length - viewportH);
+							lastMaxOffset = maxOffset;
+							if (atBottom) scrollOffset = maxOffset;
+							scrollOffset = Math.min(Math.max(scrollOffset, 0), maxOffset);
+							const slice = lines.slice(scrollOffset, scrollOffset + viewportH);
+							for (const l of slice) out.push(row(l));
+							out.push(border("└" + hr + "┘"));
+							const more: string[] = [];
+							if (scrollOffset > 0) more.push("↑ more");
+							if (scrollOffset < maxOffset) more.push("↓ more");
+							const tail = more.length ? `   ${more.join("  ")}` : "";
+							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  ←→ switch  Enter collapse  Esc back${tail}`), width));
+							return out;
+						}
+
+						// Collapsed: two sections (running, completed), windowed to the viewport.
+						out.push(row(theme.fg("accent", " Subagent Inspector ")));
+						out.push(border("├" + hr + "┤"));
+						const runningCount = items.filter((i) => i.running).length;
+						const listRows: { line: string; itemIdx: number | null }[] = [];
+						let runHdr = false;
+						let doneHdr = false;
+						for (let i = 0; i < items.length; i++) {
+							const it = items[i];
+							if (it.running && !runHdr) {
+								listRows.push({ line: theme.fg("muted", ` Running (${runningCount})`), itemIdx: null });
+								runHdr = true;
+							}
+							if (!it.running && !doneHdr) {
+								if (runHdr) listRows.push({ line: "", itemIdx: null });
+								listRows.push({ line: theme.fg("muted", ` Completed (${items.length - runningCount})`), itemIdx: null });
+								doneHdr = true;
+							}
+							const sel = i === idx;
+							const model = it.model ? theme.fg("dim", ` ${it.model}`) : "";
+							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
+							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i });
+							listRows.push({ line: theme.fg("dim", `    ${it.subLabel}`), itemIdx: i });
+						}
+						let winStart = 0;
+						if (listRows.length > viewportH) {
+							const selRow = listRows.findIndex((r) => r.itemIdx === idx);
+							winStart = Math.max(0, Math.min(selRow - Math.floor(viewportH / 2), listRows.length - viewportH));
+						}
+						for (const r of listRows.slice(winStart, winStart + viewportH)) out.push(row(r.line));
 						out.push(border("└" + hr + "┘"));
-						out.push(truncateToWidth(theme.fg("dim", "  ↑↓ navigate  Enter expand  Esc close"), width));
+						out.push(truncateToWidth(theme.fg("dim", "  ↑↓ select  ←→ switch  Enter open  Esc close"), width));
 						return out;
 					},
 					invalidate() {},
 					handleInput(data: string) {
-						if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-							if (expanded !== null) { expanded = null; return; }
-							done();
+						if (matchesKey(data, "ctrl+c")) { done(); return; }
+						const items = buildItems();
+						if (items.length === 0) {
+							if (matchesKey(data, "escape")) done();
 							return;
 						}
-						if (matchesKey(data, "up")) { selected = Math.max(0, selected - 1); expanded = null; }
-						if (matchesKey(data, "down")) { selected = Math.min(resultHistory.length - 1, selected + 1); expanded = null; }
-						if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = expanded === selected ? null : selected; }
+						let idx = items.findIndex((i) => i.key === selectedKey);
+						if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
+						const select = (n: number) => {
+							idx = Math.min(Math.max(0, n), items.length - 1);
+							selectedKey = items[idx].key;
+							lastIndex = idx;
+						};
+
+						if (expanded) {
+							if (matchesKey(data, "up")) { scrollOffset = Math.max(0, scrollOffset - 1); atBottom = scrollOffset >= lastMaxOffset; }
+							else if (matchesKey(data, "down")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + 1); atBottom = scrollOffset >= lastMaxOffset; }
+							else if (matchesKey(data, "pageUp")) { scrollOffset = Math.max(0, scrollOffset - lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
+							else if (matchesKey(data, "pageDown")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
+							else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
+							else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
+							else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
+							else if (matchesKey(data, "escape")) {
+								if (!atBottom) atBottom = true; // resume tail-follow first
+								else expanded = false;
+							}
+							tui.requestRender();
+							return;
+						}
+
+						if (matchesKey(data, "up") || matchesKey(data, "left")) select(idx - 1);
+						else if (matchesKey(data, "down") || matchesKey(data, "right")) select(idx + 1);
+						else if (matchesKey(data, "pageUp")) select(idx - 5);
+						else if (matchesKey(data, "pageDown")) select(idx + 5);
+						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = true; atBottom = true; scrollOffset = 0; }
+						else if (matchesKey(data, "escape")) done();
+						tui.requestRender();
 					},
+					dispose() { clearInterval(interval); },
 				};
 			});
 		},
