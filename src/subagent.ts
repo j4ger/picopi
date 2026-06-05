@@ -16,7 +16,7 @@ import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn, resolveModelForSpawn } from "./config.ts";
 
@@ -106,11 +106,55 @@ interface SubagentCompleteDetails {
 	preview: string;
 }
 
+interface SubagentResultEntry {
+	agent: string;
+	task: string;
+	ok: boolean;
+	model?: string;
+	durationMs: number;
+	output: string;
+	errorMessage?: string;
+	stuck?: boolean;
+	timestamp: number;
+}
+
+const RESULT_OUTPUT_CAP = 4096;
+
 // Global state
 
 const activeSubagents = new Map<string, SubagentStatus>();
 let statusHandle: { hide(): void; setHidden(h: boolean): void } | null = null;
 let extensionCtx: any = null;
+const resultHistory: SubagentResultEntry[] = [];
+
+function rebuildResults(ctx: any) {
+	resultHistory.length = 0;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === "subagent-result") {
+			const d = entry.data as SubagentResultEntry | undefined;
+			if (d && typeof d.agent === "string" && typeof d.task === "string") resultHistory.push(d);
+		}
+	}
+}
+
+function capForPersist(text: string): string {
+	if (text.length <= RESULT_OUTPUT_CAP) return text;
+	return text.slice(0, RESULT_OUTPUT_CAP) + "\n\n[truncated for session storage]";
+}
+
+function persistResult(pi: ExtensionAPI, r: RunResult, durationMs: number) {
+	pi.appendEntry("subagent-result", {
+		agent: r.agent,
+		task: r.task,
+		ok: !failed(r),
+		model: r.model,
+		durationMs,
+		output: capForPersist(output(r)),
+		errorMessage: r.errorMessage || undefined,
+		stuck: r.stuck,
+		timestamp: Date.now(),
+	} satisfies SubagentResultEntry);
+}
 
 // Helpers
 
@@ -602,7 +646,8 @@ const Params = Type.Object({
 // Extension
 
 export function setupSubagent(pi: ExtensionAPI) {
-	pi.on("session_start", (_e, ctx) => { extensionCtx = ctx; });
+	pi.on("session_start", (_e, ctx) => { extensionCtx = ctx; rebuildResults(ctx); });
+	pi.on("session_tree", (_e, ctx) => rebuildResults(ctx));
 	pi.on("session_shutdown", () => { activeSubagents.clear(); statusHandle?.hide(); statusHandle = null; });
 
 	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
@@ -692,6 +737,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						} satisfies SubagentCompleteDetails,
 					}, { deliverAs: "steer" });
 
+					persistResult(pi, result, Date.now() - startMs);
 					return result;
 				});
 
@@ -736,6 +782,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 					} satisfies SubagentCompleteDetails,
 				});
 
+				persistResult(pi, r, Date.now() - startMs);
+
 				if (isError) {
 					const reason = r.stuck ? "timeout: provider stopped responding" : `${r.stopReason || "failed"}: ${capOutput(output(r))}`;
 					return { content: [{ type: "text", text: reason }], details: { results: [r] }, isError: true };
@@ -752,6 +800,14 @@ export function setupSubagent(pi: ExtensionAPI) {
 						preview: e instanceof Error ? e.message : String(e),
 					} satisfies SubagentCompleteDetails,
 				});
+				pi.appendEntry("subagent-result", {
+					agent: params.agent!,
+					task: params.task!,
+					ok: false,
+					durationMs: Date.now() - startMs,
+					output: e instanceof Error ? e.message : String(e),
+					timestamp: Date.now(),
+				} satisfies SubagentResultEntry);
 				throw e;
 			}
 		},
@@ -787,6 +843,88 @@ export function setupSubagent(pi: ExtensionAPI) {
 			}
 			if (!expanded) c.addChild(new Text(theme.fg("muted", "(Ctrl+O to expand)"), 0, 0));
 			return c;
+		},
+	});
+
+	// --- /subagents command -------------------------------------------------------
+	pi.registerCommand("subagents", {
+		description: "Inspect subagent results for the current branch",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("/subagents needs interactive mode", "error");
+				return;
+			}
+			rebuildResults(ctx);
+			if (resultHistory.length === 0) {
+				ctx.ui.notify("No subagent results yet", "info");
+				return;
+			}
+			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+				let selected = resultHistory.length - 1;
+				let expanded: number | null = null;
+				return {
+					render(width: number): string[] {
+						const border = (s: string) => theme.fg("accent", s);
+						const innerW = Math.max(0, width - 2);
+						const hr = "─".repeat(innerW);
+						const out: string[] = [border("┌" + hr + "┐")];
+						out.push(border("│") + truncateToWidth(theme.fg("accent", " Subagent Results "), innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(theme.fg("accent", " Subagent Results ")))) + border("│"));
+						out.push(border("├" + hr + "┤"));
+
+						for (let i = 0; i < resultHistory.length; i++) {
+							const r = resultHistory[i];
+							const sel = i === selected;
+							const icon = r.ok ? theme.fg("success", "✓") : r.stuck ? theme.fg("warning", "!") : theme.fg("error", "✗");
+							const agent = theme.fg(sel ? "accent" : "muted", r.agent);
+							const dur = theme.fg("dim", formatDuration(r.durationMs));
+							const model = r.model ? theme.fg("dim", ` ${r.model}`) : "";
+							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
+							const line = truncateToWidth(`${prefix}${icon} ${agent}${model} ${dur}`, innerW);
+							out.push(border("│") + line + " ".repeat(Math.max(0, innerW - visibleWidth(line))) + border("│"));
+							const taskClip = r.task.length > innerW - 6 ? r.task.slice(0, innerW - 9) + "..." : r.task;
+							const taskLine = theme.fg("dim", `    ${taskClip}`);
+							out.push(border("│") + truncateToWidth(taskLine, innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(truncateToWidth(taskLine, innerW)))) + border("│"));
+
+							if (expanded === i) {
+								out.push(border("│") + " ".repeat(innerW) + border("│"));
+								const outputLines = r.output.split("\n");
+								for (const ol of outputLines.slice(0, 30)) {
+									const wrapped = truncateToWidth(theme.fg("text", `  ${ol}`), innerW);
+									out.push(border("│") + wrapped + " ".repeat(Math.max(0, innerW - visibleWidth(wrapped))) + border("│"));
+								}
+								if (outputLines.length > 30) {
+									const more = theme.fg("dim", `  … +${outputLines.length - 30} more lines`);
+									out.push(border("│") + truncateToWidth(more, innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(truncateToWidth(more, innerW)))) + border("│"));
+								}
+								if (r.errorMessage) {
+									out.push(border("│") + " ".repeat(innerW) + border("│"));
+									const err = theme.fg("error", `  Error: ${r.errorMessage}`);
+									out.push(border("│") + truncateToWidth(err, innerW) + " ".repeat(Math.max(0, innerW - visibleWidth(truncateToWidth(err, innerW)))) + border("│"));
+								}
+							}
+
+							if (i < resultHistory.length - 1) {
+								out.push(border("│") + theme.fg("dim", "─".repeat(innerW)) + border("│"));
+							}
+						}
+
+						out.push(border("└" + hr + "┘"));
+						out.push(truncateToWidth(theme.fg("dim", "  ↑↓ navigate  Enter expand  Esc close"), width));
+						return out;
+					},
+					invalidate() {},
+					handleInput(data: string) {
+						if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+							if (expanded !== null) { expanded = null; return; }
+							done();
+							return;
+						}
+						if (matchesKey(data, "up")) { selected = Math.max(0, selected - 1); expanded = null; }
+						if (matchesKey(data, "down")) { selected = Math.min(resultHistory.length - 1, selected + 1); expanded = null; }
+						if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = expanded === selected ? null : selected; }
+					},
+				};
+			});
 		},
 	});
 }
