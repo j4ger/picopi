@@ -16,7 +16,7 @@ import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn, resolveModelForSpawn } from "./config.ts";
 
@@ -354,6 +354,8 @@ function updateStatusPanel(context?: any) {
 								container.addChild(new Text(theme.fg(stuck ? "warning" : "muted", parts.join(", ")), 1, 0));
 							}
 						}
+						container.addChild(new Spacer(1));
+						container.addChild(new Text(theme.fg("dim", " /subagents to inspect"), 1, 0));
 					};
 
 					render();
@@ -993,24 +995,24 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 				const transcriptLines = (it: InspectItem, innerW: number): string[] => {
 					const lines: string[] = [];
+					// Wrap (not truncate) so scrolling actually reveals the full content.
+					const wrap = (s: string, indent: string) => {
+						for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push(indent + w);
+					};
 					if (it.transcript && it.transcript.length) {
 						for (const e of it.transcript) {
-							if (e.kind === "assistant") {
-								for (const raw of e.text.split("\n")) lines.push(truncateToWidth(theme.fg("text", `  ${raw}`), innerW));
-							} else if (e.kind === "tool-call") {
-								lines.push(truncateToWidth(theme.fg("accent", `→ ${e.text}`), innerW));
-							} else {
-								lines.push(truncateToWidth(theme.fg("success", `• ${e.text}`), innerW));
-							}
+							if (e.kind === "assistant") wrap(theme.fg("text", e.text), "  ");
+							else if (e.kind === "tool-call") wrap(theme.fg("accent", `→ ${e.text}`), "");
+							else wrap(theme.fg("success", `• ${e.text}`), "");
 						}
 					} else if (it.output) {
-						for (const raw of it.output.split("\n")) lines.push(truncateToWidth(theme.fg("text", `  ${raw}`), innerW));
+						wrap(theme.fg("text", it.output), "  ");
 					} else {
 						lines.push(theme.fg("dim", "  (no transcript recorded)"));
 					}
 					if (it.errorMessage) {
 						lines.push("");
-						lines.push(truncateToWidth(theme.fg("error", `  Error: ${it.errorMessage}`), innerW));
+						wrap(theme.fg("error", `Error: ${it.errorMessage}`), "  ");
 					}
 					return lines;
 				};
@@ -1075,7 +1077,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							if (scrollOffset > 0) more.push("↑ more");
 							if (scrollOffset < maxOffset) more.push("↓ more");
 							const tail = more.length ? `   ${more.join("  ")}` : "";
-							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  ←→ switch  Enter collapse  Esc back${tail}`), width));
+							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  Esc back${tail}`), width));
 							return out;
 						}
 
@@ -1108,9 +1110,14 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const selRow = listRows.findIndex((r) => r.itemIdx === idx);
 							winStart = Math.max(0, Math.min(selRow - Math.floor(viewportH / 2), listRows.length - viewportH));
 						}
-						for (const r of listRows.slice(winStart, winStart + viewportH)) out.push(row(r.line));
+						const winEnd = winStart + viewportH;
+						for (const r of listRows.slice(winStart, winEnd)) out.push(row(r.line));
 						out.push(border("└" + hr + "┘"));
-						out.push(truncateToWidth(theme.fg("dim", "  ↑↓ select  ←→ switch  Enter open  Esc close"), width));
+						const listMore: string[] = [];
+						if (winStart > 0) listMore.push("↑ more");
+						if (winEnd < listRows.length) listMore.push("↓ more");
+						const listTail = listMore.length ? `   ${listMore.join("  ")}` : "";
+						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  ←→ switch  Enter open  Esc close${listTail}`), width));
 						return out;
 					},
 					invalidate() {},
@@ -1134,6 +1141,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 							else if (matchesKey(data, "down")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + 1); atBottom = scrollOffset >= lastMaxOffset; }
 							else if (matchesKey(data, "pageUp")) { scrollOffset = Math.max(0, scrollOffset - lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
 							else if (matchesKey(data, "pageDown")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
+							else if (matchesKey(data, "home")) { scrollOffset = 0; atBottom = false; }
+							else if (matchesKey(data, "end")) { scrollOffset = lastMaxOffset; atBottom = true; }
 							else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
 							else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
 							else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
@@ -1149,6 +1158,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 						else if (matchesKey(data, "down") || matchesKey(data, "right")) select(idx + 1);
 						else if (matchesKey(data, "pageUp")) select(idx - 5);
 						else if (matchesKey(data, "pageDown")) select(idx + 5);
+						else if (matchesKey(data, "home")) select(0);
+						else if (matchesKey(data, "end")) select(items.length - 1);
 						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = true; atBottom = true; scrollOffset = 0; }
 						else if (matchesKey(data, "escape")) done();
 						tui.requestRender();
