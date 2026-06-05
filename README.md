@@ -66,7 +66,7 @@ wins). Then run `/picopi` to verify every role resolves.
 
 | Command | Effect |
 |---------|--------|
-| `/preset [name]` | Switch alias preset (or list presets) |
+| `/preset [name]` | Switch alias preset (interactive picker, or pass a name) |
 | `/picopi` | Config status panel |
 | `/undo` | Rewind one turn |
 | `/checkpoints` | List workspace checkpoints |
@@ -192,9 +192,9 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 }
 ```
 
-- Run `/preset` to see available presets and which one is active.
-- Run `/preset fast` to switch — the orchestrator, subagents, compaction, etc. all follow the new chains instantly.
-- The last-used preset **persists across restarts and session resumes** (stored in `~/.config/picopi/state.json`).
+- Run `/preset` for an interactive picker (the active preset is marked); or `/preset fast` to switch directly.
+- Switching updates the orchestrator, subagents, compaction, etc. to follow the new chains instantly.
+- The last-used preset is tracked **per workspace** and **persists across restarts and session resumes** (stored in `~/.config/picopi/state.json`, keyed by directory).
 - If an `@preset` variant is missing for an alias, the base alias is used as a fallback, so partial presets are safe.
 
 ### Web search providers

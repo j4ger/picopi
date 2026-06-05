@@ -49,34 +49,28 @@ export default function (pi: ExtensionAPI) {
 
 	// --- /preset command ----------------------------------------------------------
 	pi.registerCommand("preset", {
-		description: "Switch alias preset (or list presets if no name given)",
+		description: "Switch alias preset (interactive picker, or pass a name)",
 		handler: async (args, ctx) => {
 			const cfg = loadConfig();
-			const th = ctx.ui.theme;
-
 			const sortedPresets = listPresets(cfg);
 			const current = getActivePreset();
 
-			if (!args.trim()) {
-				// List mode
-				const lines: string[] = [];
-				lines.push(th.fg("accent", " Presets "));
-				lines.push("  " + th.fg(current ? "dim" : "success", "(default)" + (current ? "" : " ← active")));
-				for (const p of sortedPresets) {
-					const marker = p === current ? th.fg("success", " ← active") : "";
-					lines.push("  " + th.fg("text", p) + marker);
-				}
+			let name = args.trim();
+			if (!name) {
+				// Interactive picker. "default" reverts to the base (no preset).
 				if (!sortedPresets.length) {
-					lines.push("  " + th.fg("dim", "No presets found. Define them as alias@preset in config.json."));
+					ctx.ui.notify("No presets found. Define them as alias@preset in config.json.", "info");
+					return;
 				}
-				await showBoxedOverlay(ctx, lines);
-				return;
+				const label = (p: string) => (p === (current || "default") ? `${p} (active)` : p);
+				const choice = await ctx.ui.select("Switch preset", ["default", ...sortedPresets].map(label));
+				if (!choice) return; // cancelled
+				name = choice.replace(/ \(active\)$/, "");
 			}
 
 			// Switch mode
-			const name = args.trim();
 			const prev = current;
-			if (name !== "default" && name !== "" && !sortedPresets.includes(name)) {
+			if (name !== "default" && !sortedPresets.includes(name)) {
 				const hint = sortedPresets.length ? ` Available: ${sortedPresets.join(", ")}` : "";
 				ctx.ui.notify(`Unknown preset "${name}".${hint}`, "error");
 				return;
@@ -113,6 +107,8 @@ export default function (pi: ExtensionAPI) {
 
 			const lines: string[] = [];
 			lines.push(th.fg("accent", " ⬡ picopi") + "  " + th.fg("dim", configPath() ?? "(defaults)"));
+			const activePreset = getActivePreset();
+			if (activePreset) lines.push("  " + th.fg("dim", "preset: ") + th.fg("accent", activePreset));
 
 			if (cfg.orchestrator) {
 				const res = resultMap.get("orchestrator");

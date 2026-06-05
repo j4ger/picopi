@@ -79,31 +79,36 @@ export function configPath(): string | null {
 /** Separator for preset-scoped alias keys, e.g. `pro@fast`. */
 const PRESET_SEP = "@";
 
-// ── Active preset (session-local, persisted across invocations) ──────────────
+// ── Active preset (per-workspace, persisted across invocations) ──────────────
 
-/** Load the last-used preset from `state.json` in the agent dir, if any. */
-function loadPersistedPreset(): string {
+const statePath = (): string => path.join(getAgentDir(), "state.json");
+
+function readState(): { activePreset?: string; presets?: Record<string, string> } {
 	try {
-		const statePath = path.join(getAgentDir(), "state.json");
-		if (!fs.existsSync(statePath)) return "";
-		const state = JSON.parse(fs.readFileSync(statePath, "utf-8"));
-		if (typeof state.activePreset === "string" && state.activePreset) return state.activePreset;
+		return JSON.parse(fs.readFileSync(statePath(), "utf-8"));
 	} catch {
-		/* corrupted or missing — ignore */
+		return {}; // missing or corrupted
 	}
-	return "";
 }
 
-/** Write the current preset to the state file so it survives across invocations. */
+/** Load the last-used preset for the current workspace (falls back to the
+ *  legacy global key for configs written before per-workspace tracking). */
+function loadPersistedPreset(): string {
+	const state = readState();
+	const byWorkspace = state.presets?.[process.cwd()];
+	if (typeof byWorkspace === "string") return byWorkspace;
+	return typeof state.activePreset === "string" ? state.activePreset : "";
+}
+
+/** Persist the current workspace's preset, preserving other workspaces' entries. */
 function persistPreset(name: string): void {
 	try {
-		const statePath = path.join(getAgentDir(), "state.json");
-		if (name) {
-			fs.writeFileSync(statePath, JSON.stringify({ activePreset: name }, null, 2), "utf-8");
-		} else {
-			// Clear the file when reverting to default (don't leave stale preset around).
-			try { fs.unlinkSync(statePath); } catch { /* ok if already gone */ }
-		}
+		const state = readState();
+		const presets = state.presets ?? {};
+		if (name) presets[process.cwd()] = name;
+		else delete presets[process.cwd()];
+		const next: { presets: Record<string, string> } = { presets };
+		fs.writeFileSync(statePath(), JSON.stringify(next, null, 2), "utf-8");
 	} catch {
 		/* can't write — non-fatal */
 	}
