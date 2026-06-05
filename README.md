@@ -258,8 +258,15 @@ flake.nix
 
 ## Updating
 
-**Nix:** `nix profile upgrade picopi` or `nix run --refresh`  
-**Non-Nix:** `git pull` (launcher reads from repo)
+**Nix:** `nix profile upgrade picopi` or `nix run --refresh`
+
+**Non-Nix:** `picopi --update` — pulls the latest picopi, regenerates the
+launcher, and runs `pi update pi`. Use `picopi --update --no-pi` to update picopi
+only (if you manage pi yourself). Requires a clean repo checkout (commit/stash
+local changes first).
+
+picopi warns at startup if the installed pi is older than it needs; run
+`picopi --update` to catch up.
 
 Config files are seeded once and never overwritten. Merge new defaults manually
 if needed.

@@ -24,10 +24,10 @@
     "themes": ["./agent/themes"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=0.78.0",
+    "@earendil-works/pi-agent-core": ">=0.78.0",
+    "@earendil-works/pi-coding-agent": ">=0.78.0",
+    "@earendil-works/pi-tui": ">=0.78.0",
     "typebox": "*"
   }
 }

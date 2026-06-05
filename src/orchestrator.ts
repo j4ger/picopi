@@ -11,11 +11,24 @@
 
 import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
+import { VERSION as PI_VERSION, convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
 import { type ModelRegistryLike, type PicopiConfig, loadConfig, resolveRoleModel, validateAllResolutions } from "./config.ts";
 import { clearPicopiFooterNote, setPicopiFooter } from "./footer.ts";
 
 const COMPACT_TIMEOUT_MS = 120_000;
+
+/** Minimum pi version picopi is built against (see package.json peerDependencies). */
+const MIN_PI_VERSION = "0.78.0";
+
+/** True if semver `a` < `b` (numeric major.minor.patch; ignores pre-release tags). */
+function isOlder(a: string, b: string): boolean {
+	const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+	const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+	for (let i = 0; i < 3; i++) {
+		if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0);
+	}
+	return false;
+}
 
 function registry(ctx: ExtensionContext): ModelRegistryLike {
 	return ctx.modelRegistry as unknown as ModelRegistryLike;
@@ -64,6 +77,10 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 		// In print/JSON mode (e.g. spawned subagents) the model is set via --model;
 		// don't override it. Only manage the model for interactive sessions.
 		if (!ctx.hasUI) return;
+		// Warn once if the running pi is older than what picopi is built against.
+		if ((event.reason === "startup" || event.reason === "new") && isOlder(PI_VERSION, MIN_PI_VERSION)) {
+			ctx.ui.notify(`picopi needs pi ≥ ${MIN_PI_VERSION} (running ${PI_VERSION}) — run 'picopi --update'`, "warning");
+		}
 		const cfg = loadConfig();
 		// Only auto-apply on fresh starts; honour the model restored on resume/fork.
 		if (event.reason === "startup" || event.reason === "new") {
