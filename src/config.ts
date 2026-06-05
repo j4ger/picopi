@@ -2,11 +2,8 @@
  * Centralized picopi config + model resolution.
  *
  * The agent dir IS the config dir (PI_CODING_AGENT_DIR -> ~/.config/picopi by
- * default), so config lives at <agentDir>/config.json. Resolved (first existing
- * wins) from:
- *   1. $PICOPI_CONFIG          — explicit override (flake bakes this)
- *   2. <agentDir>/config.json  — the user config
- *   3. the repo bundled default — dev fallback
+ * default), so the single config file lives at <agentDir>/config.json. The
+ * installer/flake seed it there once; it's the only path consulted at runtime.
  *
  * Model strategy: role -> { model: alias, thinking, timeout }; alias -> an
  * ordered list of provider/id models. The first one in the list with working
@@ -34,21 +31,14 @@ export interface PicopiConfig {
 	webSearch?: { provider?: string | null; searchModel?: string | null; summaryModel?: string | null };
 }
 
-const here = import.meta.dirname;
-
-function candidatePaths(): string[] {
-	const out: string[] = [];
-	// 1. Explicit override (a flake bakes its config here).
-	if (process.env.PICOPI_CONFIG) out.push(process.env.PICOPI_CONFIG);
-	// 2. The user config: the agent dir IS the config dir.
+/** The single config file path: <agentDir>/config.json (~/.config/picopi by
+ *  default). Returns null if the agent dir can't be resolved. */
+function configFilePath(): string | null {
 	try {
-		out.push(path.join(getAgentDir(), "config.json"));
+		return path.join(getAgentDir(), "config.json");
 	} catch {
-		/* ignore */
+		return null;
 	}
-	// 3. Repo bundled default (dev fallback).
-	out.push(path.resolve(here, "..", "agent", "config.json"));
-	return out;
 }
 
 // Drop "_comment" keys recursively so the config doubles as inline docs.
@@ -62,27 +52,28 @@ function stripComments(o: unknown): unknown {
 let cache: { file: string; mtime: number; cfg: PicopiConfig } | null = null;
 
 export function loadConfig(): PicopiConfig {
-	for (const p of candidatePaths()) {
+	const p = configFilePath();
+	if (!p) return {};
+	try {
+		const { mtimeMs } = fs.statSync(p);
+		if (cache?.file === p && cache.mtime === mtimeMs) return cache.cfg;
+		const cfg = stripComments(JSON.parse(fs.readFileSync(p, "utf-8"))) as PicopiConfig;
+		cache = { file: p, mtime: mtimeMs, cfg };
+		return cfg;
+	} catch (err) {
+		// Warn when the file exists but can't be parsed (syntax error, etc.).
 		try {
-			const { mtimeMs } = fs.statSync(p);
-			if (cache?.file === p && cache.mtime === mtimeMs) return cache.cfg;
-			const cfg = stripComments(JSON.parse(fs.readFileSync(p, "utf-8"))) as PicopiConfig;
-			cache = { file: p, mtime: mtimeMs, cfg };
-			return cfg;
-		} catch (err) {
-			// Warn when a file exists but can't be parsed (syntax error, etc.)
-			try {
-				if (fs.existsSync(p)) console.warn(`picopi: failed to load config from ${p} (${err instanceof Error ? err.message : err}), falling back`);
-			} catch {
-				/* eexist race, ignore */
-			}
+			if (fs.existsSync(p)) console.warn(`picopi: failed to load config from ${p} (${err instanceof Error ? err.message : err})`);
+		} catch {
+			/* eexist race, ignore */
 		}
+		return {};
 	}
-	return {};
 }
 
 export function configPath(): string | null {
-	return candidatePaths().find((p) => fs.existsSync(p)) ?? null;
+	const p = configFilePath();
+	return p && fs.existsSync(p) ? p : null;
 }
 
 /** Separator for preset-scoped alias keys, e.g. `pro@fast`. */
