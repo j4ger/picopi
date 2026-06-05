@@ -23,7 +23,7 @@ import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn, r
 // Constants
 
 const MAX_PARALLEL = 6;
-const MAX_CONCURRENCY = 3;
+const DEFAULT_CONCURRENCY = 3;
 const PER_CHILD_OUTPUT_CAP = 50 * 1024;
 const MAX_DEPTH = 2;
 const DEPTH_ENV = "PICOPI_SUBAGENT_DEPTH";
@@ -637,7 +637,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 				let completed = 0;
 				const startMs = Date.now();
 
-				const results = await mapLimit(params.tasks!, MAX_CONCURRENCY, async (t, i) => {
+				const cfg = loadConfig();
+				const concurrency = cfg.concurrency ?? DEFAULT_CONCURRENCY;
+				const results = await mapLimit(params.tasks!, concurrency, async (t, i) => {
 					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout);
 					completed++;
 

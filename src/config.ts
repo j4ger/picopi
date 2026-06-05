@@ -29,6 +29,8 @@ export interface PicopiConfig {
 	aliases?: Record<string, string[]>;
 	compaction?: { model?: string | null };
 	webSearch?: { provider?: string | null; searchModel?: string | null; summaryModel?: string | null };
+	/** Max concurrent subagent processes in parallel mode (default: 3). */
+	concurrency?: number;
 }
 
 /** The single config file path: <agentDir>/config.json (~/.config/picopi by
