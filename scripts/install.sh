@@ -13,22 +13,43 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_lib.sh
+. "$repo/scripts/_lib.sh"
+
+# ── --help ────────────────────────────────────────────────────────────────────
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  cat <<EOF
+${H} picopi — opinionated pi setup
+
+Usage: ./scripts/install.sh [--help]
+
+Creates ~/.local/bin/picopi launcher and seeds config in
+~/.config/picopi (override with PICOPI_HOME / PICOPI_BINDIR).
+
+Config files are seeded once and never overwritten.
+Your existing pi is not touched.
+
+Docs: https://github.com/j4ger/picopi#quickstart
+Uninstall: rm ~/.local/bin/picopi && rm -rf ~/.config/picopi
+EOF
+  exit 0
+fi
+
+# ── preflight ─────────────────────────────────────────────────────────────────
 dir="${PICOPI_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
 bindir="${PICOPI_BINDIR:-$HOME/.local/bin}"
 
 pi_bin="$(command -v pi || true)"
 if [ -z "$pi_bin" ]; then
-  echo "error: 'pi' not found on PATH. Install it first:" >&2
-  echo "  https://github.com/earendil-works/pi" >&2
+  fail "'pi' not found on PATH — install it first: https://github.com/earendil-works/pi"
   exit 1
 fi
 
-echo "Installing picopi launcher; config dir: $dir"
+[ -n "${PICOPI_NO_HEADER:-}" ] || echo -e "$H picopi — installing to $dir"
 mkdir -p "$dir"
 
-# One-time migration off the old "copy source into the config dir" layout.
+# ── one-time migration off the old "copy source into the config dir" layout ──
 if [ -e "$dir/.stamp" ] || [ -d "$dir/src" ]; then
-  echo "  migrating: removing old in-config source copies"
   rm -rf "$dir/.stamp" "$dir/src" "$dir/agents" "$dir/prompts" "$dir/themes" "$dir/AGENTS.md"
   if command -v python3 >/dev/null && [ -e "$dir/settings.json" ]; then
     python3 - "$dir/settings.json" <<'PY'
@@ -39,28 +60,26 @@ for k in ("extensions", "prompts", "themes", "skills"):
     s.pop(k, None)
 json.dump(s, open(p, "w"), indent=2)
 PY
-    echo "  migrating: stripped resource-wiring keys from settings.json"
   fi
+  ok "migrated: removed old source copies"
 fi
 
-# Seed user-owned files once; never clobber.
+# ── seed user-owned files once; never clobber ─────────────────────────────────
 if [ -e "$dir/config.json" ]; then
-  echo "  kept    config.json"
+  ok "config.json (kept)"
 else
   cp "$repo/agent/config.json" "$dir/config.json"
-  echo "  created config.json"
+  ok "config.json"
 fi
 if [ -e "$dir/settings.json" ]; then
-  echo "  kept    settings.json"
+  ok "settings.json (kept)"
 else
   cp "$repo/agent/settings.json" "$dir/settings.json"
-  echo "  created settings.json"
+  ok "settings.json"
 fi
 [ -e "$dir/models.json" ] || printf '{\n  "providers": {}\n}\n' > "$dir/models.json"
 
-# `picopi` launcher: a thin wrapper that sets env vars and execs the shared core
-# (scripts/picopi-launch.sh) from the repo, so help/update/seeding/flags stay in
-# one place. Override the config dir with $PICOPI_HOME.
+# ── generate launcher ─────────────────────────────────────────────────────────
 mkdir -p "$bindir"
 launcher="$bindir/picopi"
 cat > "$launcher" <<LAUNCHER
@@ -74,35 +93,13 @@ exec env \\
   bash "\$repo/scripts/picopi-launch.sh" "\$@"
 LAUNCHER
 chmod +x "$launcher"
-echo "  created $launcher"
+ok "launcher → $launcher"
 
+# ── PATH hint ─────────────────────────────────────────────────────────────────
 in_path=no
 case ":$PATH:" in *":$bindir:"*) in_path=yes ;; esac
-
-cat <<EOF
-
-Your config lives in: $dir/
-  config.json    picopi roles/aliases — map pro/flash to models you can use
-  models.json    custom providers/gateways only (built-ins just need /login)
-  settings.json  pi settings
-picopi source stays in the repo: $repo (update with 'git pull')
-
-Run it with:  picopi
-EOF
-
 if [ "$in_path" = no ]; then
-  cat <<EOF
-
-Note: $bindir is not on your PATH. Add it (then restart your shell):
-  export PATH="$bindir:\$PATH"
-Or run directly: $launcher
-EOF
+  warn "$bindir not on PATH — add it or run $launcher directly"
 fi
 
-cat <<EOF
-
-Then run 'picopi' and use /login to authenticate a provider (OAuth or API key;
-see pi's provider docs). Built-in providers need no models.json.
-
-Uninstall: rm $launcher && rm -rf $dir
-EOF
+echo -e "$H done — run ${B}picopi${X} to start"

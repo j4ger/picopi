@@ -1,7 +1,7 @@
 {
   "name": "picopi",
   "version": "0.1.0",
-  "description": "A batteries-included pi agent: web access, opencode-style undo, todos, slim multi-agent, and role/fallback model resolution — packaged with Nix.",
+  "description": "An opinionated pi setup: web access, opencode-style undo, todos, slim multi-agent, and role/fallback model resolution — packaged with Nix.",
   "keywords": ["pi-package", "pi", "coding-agent"],
   "author": "j4ger",
   "license": "MIT",

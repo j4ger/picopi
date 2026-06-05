@@ -6,29 +6,39 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_lib.sh
+. "$repo/scripts/_lib.sh"
+
 with_pi=yes
 [ "${1:-}" = "--no-pi" ] && with_pi=no
 
-echo "Updating picopi in $repo"
+echo -e "$H picopi — updating"
+
+# ── git pull ──────────────────────────────────────────────────────────────────
 if [ -n "$(git -C "$repo" status --porcelain)" ]; then
-  echo "error: repo has local changes; commit/stash them first, then retry." >&2
+  fail "repo has local changes — commit or stash first"
   exit 1
 fi
 if ! git -C "$repo" pull --ff-only; then
-  echo "error: 'git pull --ff-only' failed (diverged history?). Resolve manually in $repo." >&2
+  fail "pull failed — resolve conflicts in $repo"
   exit 1
 fi
+ok "pulled latest"
 
-# Re-run install to regenerate the launcher and apply any migrations (keeps config).
-bash "$repo/scripts/install.sh"
+# ── re-run install (suppress its header) ─────────────────────────────────────
+PICOPI_NO_HEADER=1 bash "$repo/scripts/install.sh"
 
+# ── update pi ─────────────────────────────────────────────────────────────────
 if [ "$with_pi" = yes ]; then
   if command -v pi >/dev/null; then
-    echo "Updating pi"
-    pi update pi || echo "warning: 'pi update pi' failed; update pi manually." >&2
+    if pi update pi; then
+      ok "pi updated"
+    else
+      warn "pi update failed — update manually"
+    fi
   else
-    echo "warning: 'pi' not on PATH; skipping pi update." >&2
+    warn "'pi' not on PATH — skipping"
   fi
 fi
 
-echo "Done."
+echo -e "$H done"

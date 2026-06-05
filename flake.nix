@@ -1,5 +1,5 @@
 {
-  description = "picopi — a batteries-included pi coding agent setup";
+  description = "picopi — an opinionated pi setup";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";

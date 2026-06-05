@@ -9,20 +9,22 @@
 set -euo pipefail
 
 src="${PICOPI_SRC:?PICOPI_SRC not set}"
+# shellcheck source=scripts/_lib.sh
+. "$src/scripts/_lib.sh" 2>/dev/null || true
 dir="${PICOPI_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/picopi}"
 
 case "${1:-}" in
   --update)
     if [ -n "${PICOPI_UPDATE_CMD:-}" ]; then exec "$PICOPI_UPDATE_CMD" "${@:2}"; fi
-    echo "${PICOPI_UPDATE_HINT:-To update, reinstall picopi.}"; exit 0 ;;
+    echo -e "${H:-⬡} ${PICOPI_UPDATE_HINT:-To update, reinstall picopi.}"; exit 0 ;;
   -h | --help)
-    cat <<'PICOPIHELP'
-picopi — a pi wrapper. All options are forwarded to pi; see 'pi --help'.
+    cat <<EOF
+${H:-⬡} picopi — opinionated pi setup
 
-  picopi [pi options...]   launch picopi
-  picopi --update          update picopi (add --no-pi to skip pi)
-  picopi -h, --help        show this help
-PICOPIHELP
+Usage: picopi [--update [--no-pi]] [--help] [pi-options...]
+
+All other options are forwarded to pi; see 'pi --help'.
+EOF
     exit 0 ;;
 esac
 

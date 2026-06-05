@@ -1,6 +1,6 @@
 # picopi
 
-A batteries-included [pi](https://github.com/earendil-works/pi) extension with web
+An opinionated [pi](https://github.com/earendil-works/pi) setup with web
 search, undo, todos, subagents, and role-based model routing — all from one
 config file. Ships with an **Ayu Dark**-inspired terminal theme.
 

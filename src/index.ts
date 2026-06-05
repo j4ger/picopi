@@ -1,5 +1,5 @@
 /**
- * picopi — one extension wiring together web search/fetch, opencode-style undo,
+ * picopi — opinionated pi setup: web search/fetch, opencode-style undo,
  * todos, a slim multi-agent set, and role/fallback model resolution. All driven
  * by a single config (config.json in the agent dir).
  */
