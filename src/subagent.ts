@@ -223,7 +223,7 @@ function capOutput(text: string): string {
 }
 
 function failed(r: RunResult): boolean {
-	return r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted" || r.stuck;
+	return r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted" || r.stuck === true;
 }
 
 function output(r: RunResult): string {
