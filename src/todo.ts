@@ -82,8 +82,13 @@ export function setupTodo(pi: ExtensionAPI) {
 			const d = msg.details as TodoDetails | undefined;
 			// Validate shape: don't trust arbitrary historical tool-result details.
 			if (d && Array.isArray(d.todos) && typeof d.nextId === "number") {
-				todos = d.todos.filter((t) => t && typeof t.id === "number" && typeof t.text === "string");
-				nextId = d.nextId;
+				// Deep-copy so the cache never aliases objects held by historical
+				// snapshots; in-place mutation (e.g. toggle) must not rewrite the past.
+				todos = d.todos
+					.filter((t) => t && typeof t.id === "number" && typeof t.text === "string" && typeof t.done === "boolean")
+					.map((t) => ({ id: t.id, text: t.text, done: t.done }));
+				// Reconcile nextId against actual ids so a stale snapshot can't cause id reuse.
+				nextId = todos.reduce((m, t) => Math.max(m, t.id + 1), d.nextId);
 			}
 		}
 		refreshWidget(ctx);
@@ -93,34 +98,52 @@ export function setupTodo(pi: ExtensionAPI) {
 		const open = todos.filter((t) => !t.done);
 		const done = todos.filter((t) => t.done);
 		if (open.length === 0 && done.length === 0) {
-			ctx.ui.setWidget("picopi-todo", []);
+			// undefined removes the widget and runs the framework's teardown path.
+			ctx.ui.setWidget("picopi-todo", undefined);
 			return;
 		}
-		const th = ctx.ui.theme;
+		// Snapshot text now; the factory must not reference the mutable `todos` array.
+		const isFolded = folded;
 		const count = open.length;
-		if (folded) {
-			ctx.ui.setWidget("picopi-todo", [th.fg("muted", `▸ ${count} todo${count !== 1 ? "s" : ""} `) + th.fg("dim", "^I")]);
-			return;
-		}
-		const head = th.fg("accent", `▾ ${count} todo${count !== 1 ? "s" : ""}`) + " " + th.fg("dim", "^I");
-		const clip = (s: string) => (s.length > 60 ? s.slice(0, 57) + "…" : s);
-		const lines: string[] = [head];
-		for (const t of open) {
-			lines.push("  " + th.fg("dim", "○ ") + th.fg("muted", clip(t.text)));
-		}
-		if (done.length > 0) {
-			lines.push(th.fg("dim", `  ── ${done.length} done ──`));
-			for (const t of done) {
-				lines.push("  " + th.fg("success", "✓ ") + th.fg("dim", clip(t.text)));
-			}
-		}
-		ctx.ui.setWidget("picopi-todo", lines);
+		const openText = open.map((t) => t.text);
+		const doneText = done.map((t) => t.text);
+		// Factory form so we get the real viewport width and can truncate by display
+		// width (CJK/emoji-safe) instead of UTF-16 code-unit count.
+		ctx.ui.setWidget("picopi-todo", (_tui, th) => ({
+			invalidate() {},
+			render(width: number): string[] {
+				const label = `${count} todo${count !== 1 ? "s" : ""}`;
+				if (isFolded) {
+					return [th.fg("muted", `▸ ${label} `) + th.fg("dim", "alt+t")];
+				}
+				// Account for the "  ○ " prefix and the framework's paddingX.
+				const textWidth = Math.max(8, width - 6);
+				const clip = (s: string) => truncateToWidth(s, textWidth, "…");
+				const lines: string[] = [th.fg("accent", `▾ ${label}`) + " " + th.fg("dim", "alt+t")];
+				for (const text of openText) {
+					lines.push("  " + th.fg("dim", "○ ") + th.fg("muted", clip(text)));
+				}
+				if (doneText.length > 0) {
+					lines.push(th.fg("dim", `  ── ${doneText.length} done ──`));
+					for (const text of doneText) {
+						lines.push("  " + th.fg("success", "✓ ") + th.fg("dim", clip(text)));
+					}
+				}
+				return lines;
+			},
+		}));
 	};
 
-	pi.on("session_start", async (_e, ctx) => rebuild(ctx));
+	pi.on("session_start", async (_e, ctx) => {
+		// Reset the per-session UI preference; a new session starts unfolded.
+		folded = false;
+		rebuild(ctx);
+	});
 	pi.on("session_tree", async (_e, ctx) => rebuild(ctx));
 
-	pi.registerShortcut("ctrl+i", {
+	// alt+t (not ctrl+i: ctrl+i == Tab on terminals without the Kitty keyboard
+	// protocol, which would hijack autocomplete/indent app-wide).
+	pi.registerShortcut("alt+t", {
 		description: "Toggle todo list fold/unfold",
 		handler: async (ctx) => {
 			folded = !folded;
@@ -138,9 +161,11 @@ export function setupTodo(pi: ExtensionAPI) {
 		],
 		parameters: TodoParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
+			// Deep-copy: each snapshot must be an independent record of state at this
+			// point, never sharing Todo objects with the live array or other snapshots.
 			const details = (action: TodoDetails["action"], error?: string): TodoDetails => ({
 				action,
-				todos: [...todos],
+				todos: todos.map((t) => ({ ...t })),
 				nextId,
 				error,
 			});
@@ -192,6 +217,7 @@ export function setupTodo(pi: ExtensionAPI) {
 			const d = result.details as TodoDetails | undefined;
 			if (!d) return new Text("", 0, 0);
 			if (d.error) return new Text(theme.fg("error", `Error: ${d.error}`), 0, 0);
+			if (!Array.isArray(d.todos)) return new Text("", 0, 0);
 			if (d.todos.length === 0) return new Text(theme.fg("dim", "No todos"), 0, 0);
 			let t = theme.fg("muted", `${d.todos.filter((x) => x.done).length}/${d.todos.length} done`);
 			for (const td of d.todos.slice(0, 8)) {
