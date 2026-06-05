@@ -69,6 +69,21 @@ cat > "$launcher" <<LAUNCHER
 # config dir, loading all source from the repo. Override the dir with \$PICOPI_HOME.
 repo=$(printf '%q' "$repo")
 if [ "\${1:-}" = "--update" ] || [ "\${1:-}" = "upgrade" ]; then exec "\$repo/scripts/update.sh" "\${@:2}"; fi
+if [ "\${1:-}" = "-h" ] || [ "\${1:-}" = "--help" ]; then cat <<'PICOPIHELP'
+picopi — a batteries-included pi setup (wrapper around pi)
+
+Usage:
+  picopi [pi options...]      launch picopi (all options forwarded to pi)
+  picopi --update             update picopi + pi
+  picopi --update --no-pi     update picopi only
+  picopi upgrade              alias for --update
+  picopi -h, --help           show this help
+
+In-app slash commands: /picopi, /preset, /undo, /todos, /review, /research (more in README).
+Config dir: \$PICOPI_HOME (default ~/.config/picopi).
+For pi's own options, run: pi --help
+PICOPIHELP
+exit 0; fi
 pi_bin="\$(command -v pi || true)"
 [ -n "\$pi_bin" ] || pi_bin=$(printf '%q' "$pi_bin")
 exec env PI_CODING_AGENT_DIR="\${PICOPI_HOME:-$dir}" "\$pi_bin" \\
