@@ -30,6 +30,29 @@ const DEPTH_ENV = "PICOPI_SUBAGENT_DEPTH";
 const DEFAULT_TIMEOUT = 120; // seconds
 const WATCHDOG_INTERVAL = 5000; // ms
 
+// Env var prefixes that should not leak to child processes.
+// Provider API keys (OPENAI_*, ANTHROPIC_*, etc.) are intentionally kept —
+// the child pi needs them to authenticate. This strips unrelated secrets.
+const SENSITIVE_ENV_PREFIXES = [
+	"AWS_SECRET", "AWS_ACCESS_KEY", "AWS_SESSION",
+	"GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN",
+	"NPM_TOKEN", "NPM_AUTH",
+	"DATABASE_URL", "DB_PASSWORD", "DB_SECRET",
+	"PRIVATE_KEY", "SECRET_KEY", "SIGNING_KEY",
+	"STRIPE_SECRET", "PAYPAL_SECRET",
+];
+
+function sanitizeEnv(): NodeJS.ProcessEnv {
+	const env: Record<string, string> = {};
+	for (const [k, v] of Object.entries(process.env)) {
+		if (v === undefined) continue;
+		const upper = k.toUpperCase();
+		if (SENSITIVE_ENV_PREFIXES.some((p) => upper.startsWith(p))) continue;
+		env[k] = v;
+	}
+	return env;
+}
+
 // Tool defaults per agent role (config.json > markdown > these)
 const BUILT_IN_DEFAULTS: Record<string, string[]> = {
 	planner: ["read", "grep", "find", "ls"],
@@ -124,9 +147,13 @@ function failed(r: RunResult): boolean {
 }
 
 function output(r: RunResult): string {
-	return r.stuck ? "Provider stopped responding (timeout)" :
-		failed(r) ? r.errorMessage || r.stderr || finalOutput(r.messages) || "(no output)" :
-		finalOutput(r.messages) || "(no output)";
+	if (r.stuck) return "Provider stopped responding (timeout)";
+	if (!failed(r)) return finalOutput(r.messages) || "(no output)";
+	const parts: string[] = [];
+	if (r.errorMessage) parts.push(r.errorMessage);
+	if (r.stderr?.trim()) parts.push(r.stderr.trim());
+	if (!parts.length) parts.push(finalOutput(r.messages) || "(no output)");
+	return parts.join("\n");
 }
 
 /** True if the failure looks like a model/API issue (retryable), as opposed to
@@ -437,11 +464,19 @@ async function runAgent(
 			const code = await new Promise<number>((resolve) => {
 				const inv = piInvocation(args);
 				const childDepth = Number(process.env[DEPTH_ENV] ?? "0") + 1;
-				const proc = spawn(inv.command, inv.args, {
+				let proc: ReturnType<typeof spawn>;
+
+				// Register abort handler before spawn to avoid TOCTOU race.
+				const killOnAbort = () => { aborted = true; proc?.kill("SIGTERM"); setTimeout(() => proc && !proc.killed && proc.kill("SIGKILL"), 4000); };
+				if (signal) {
+					signal.aborted ? killOnAbort() : signal.addEventListener("abort", killOnAbort, { once: true });
+				}
+
+				proc = spawn(inv.command, inv.args, {
 					cwd: defaultCwd,
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
-					env: { ...process.env, [DEPTH_ENV]: String(childDepth), PICOPI_ACTIVE_PRESET: getActivePreset() },
+					env: { ...sanitizeEnv(), [DEPTH_ENV]: String(childDepth), PICOPI_ACTIVE_PRESET: getActivePreset() },
 				});
 				let buf = "";
 
@@ -485,6 +520,7 @@ async function runAgent(
 				};
 
 				proc.stdout.on("data", (d) => {
+					lastEventTime = Date.now(); // any output means alive
 					buf += d.toString();
 					const lines = buf.split("\n");
 					buf = lines.pop() || "";
@@ -501,10 +537,7 @@ async function runAgent(
 					resolve(1);
 				});
 
-				if (signal) {
-					const kill = () => { aborted = true; proc.kill("SIGTERM"); setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000); };
-					signal.aborted ? kill() : signal.addEventListener("abort", kill, { once: true });
-				}
+
 			});
 
 			if (watchdogId) clearInterval(watchdogId);
