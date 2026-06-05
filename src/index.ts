@@ -6,10 +6,10 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { configPath, getActivePreset, listPresets, loadConfig, setActivePreset, validateAllResolutions, type ModelRegistryLike, type RoleConfig } from "./config.ts";
+import { configPath, getActivePreset, listPresets, loadConfig, resolveChain, setActivePreset, validateAllResolutions, type ModelRegistryLike, type RoleConfig } from "./config.ts";
 import { applyOrchestrator, setupOrchestrator } from "./orchestrator.ts";
-import { setupFallback } from "./fallback.ts";
-import { setupFooter } from "./footer.ts";
+import { setCurrentModel, getCurrentAlias, getCurrentModelSpec, findInChain, setupFallback } from "./fallback.ts";
+import { clearPicopiFooterNote, setupFooter } from "./footer.ts";
 import { setupSubagent } from "./subagent.ts";
 import { setupTodo } from "./todo.ts";
 import { setupUndo } from "./undo.ts";
@@ -97,6 +97,84 @@ export default function (pi: ExtensionAPI) {
 			}
 			const label = target || "default";
 			ctx.ui.notify(`Switched to preset "${label}"${res.detail ? ` (${res.detail})` : ""}`, "success");
+		},
+	});
+
+	// --- /fallback command ------------------------------------------------------
+	pi.registerCommand("fallback", {
+		description: "Select a model in the fallback chain (interactive picker, or 'reset' to go back to the top)",
+		handler: async (args, ctx) => {
+			const currentAlias = getCurrentAlias();
+			if (!currentAlias) {
+				ctx.ui.notify("No fallback chain active — set orchestrator.model in config.json", "warning");
+				return;
+			}
+
+			const cfg = loadConfig();
+			const chain = resolveChain(cfg, currentAlias);
+			if (chain.length <= 1) {
+				ctx.ui.notify(`Fallback chain for "${currentAlias}" has only one model`, "info");
+				return;
+			}
+
+			const currentSpec = getCurrentModelSpec();
+			const currentIdx = findInChain(chain, currentSpec);
+
+			let targetIdx: number;
+
+			const raw = args.trim().toLowerCase();
+			if (raw === "reset") {
+				targetIdx = 0;
+			} else if (raw) {
+				// Try matching by model spec substring
+				const matchIdx = findInChain(chain, args.trim());
+				if (matchIdx >= 0) {
+					targetIdx = matchIdx;
+				} else {
+					ctx.ui.notify(`"${args.trim()}" not in fallback chain: ${chain.join(", ")}`, "error");
+					return;
+				}
+			} else {
+				// Interactive picker
+				const labels = chain.map((spec, i) => {
+					const marker = i === currentIdx ? " (current)" : "";
+					return `${i + 1}. ${spec}${marker}`;
+				});
+				const choice = await ctx.ui.select("Select fallback model (Esc to cancel)", labels);
+				if (choice === undefined) return;
+				targetIdx = labels.indexOf(choice);
+			}
+
+			const targetSpec = chain[targetIdx];
+			if (targetSpec === currentSpec) {
+				ctx.ui.notify(`Already using ${targetSpec}`, "info");
+				return;
+			}
+
+			// Resolve and switch
+			const slash = targetSpec.indexOf("/");
+			if (slash <= 0) {
+				ctx.ui.notify(`Malformed model spec: ${targetSpec}`, "error");
+				return;
+			}
+			const provider = targetSpec.slice(0, slash);
+			const modelId = targetSpec.slice(slash + 1);
+
+			const model = ctx.modelRegistry.find(provider, modelId);
+			if (!model) {
+				ctx.ui.notify(`Model ${targetSpec} not found in registry — run /login`, "error");
+				return;
+			}
+
+			const success = await pi.setModel(model as any);
+			if (!success) {
+				ctx.ui.notify(`Failed to switch to ${targetSpec} (no API key?)`, "error");
+				return;
+			}
+
+			setCurrentModel(targetSpec);
+			clearPicopiFooterNote();
+			ctx.ui.notify(`Switched to ${targetSpec} (${targetIdx + 1}/${chain.length} in chain)`, "success");
 		},
 	});
 

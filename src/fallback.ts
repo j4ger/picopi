@@ -35,6 +35,21 @@ let errorsForModel = 0;
 // at session_start (0 = fall back immediately, i.e. retry disabled).
 let retryThreshold = 0;
 
+/** Accessors for the fallback chain position (used by /fallback command). */
+export function getCurrentAlias(): string { return currentAlias; }
+export function getCurrentModelSpec(): string { return currentModelSpec; }
+
+/**
+ * Manually set the current model in the fallback chain (used by /fallback
+ * picker / reset). Resets the error counter so a deliberate switch doesn't
+ * immediately trigger a fallback on the first error.
+ */
+export function setCurrentModel(spec: string): void {
+	currentModelSpec = spec;
+	errorsForModel = 0;
+	retryThreshold = 1; // same as after a normal fallback — next error walks further
+}
+
 async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig, reason: string) {
 	if (!currentAlias) return;
 
@@ -99,7 +114,7 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
  * Find the index of `target` in the chain, trying various matching strategies
  * (exact match, model-id-only match, suffix match).
  */
-function findInChain(chain: string[], target: string): number {
+export function findInChain(chain: string[], target: string): number {
 	// 1. Exact match
 	const exact = chain.indexOf(target);
 	if (exact !== -1) return exact;
