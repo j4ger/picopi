@@ -94,6 +94,10 @@ interface RunResult {
 interface TranscriptEntry {
 	kind: "assistant" | "tool-call" | "tool-done";
 	text: string;
+	toolName?: string;
+	args?: any;
+	result?: any;
+	isError?: boolean;
 }
 
 interface SubagentStatus {
@@ -390,12 +394,43 @@ function updateStatusPanel(context?: any) {
 	}
 }
 
-const pushTranscript = (id: string, kind: TranscriptEntry["kind"], text: string) => {
+const pushTranscript = (id: string, kind: TranscriptEntry["kind"], text: string, opts?: { toolName?: string; args?: any; result?: any; isError?: boolean }) => {
 	const sub = activeSubagents.get(id);
 	if (!sub || !text) return;
 	const t = sub.transcript ?? (sub.transcript = []);
-	t.push({ kind, text: text.length > TRANSCRIPT_TEXT_CAP ? text.slice(0, TRANSCRIPT_TEXT_CAP) + "…" : text });
+	const entry: TranscriptEntry = {
+		kind,
+		text: text.length > TRANSCRIPT_TEXT_CAP ? text.slice(0, TRANSCRIPT_TEXT_CAP) + "…" : text,
+		...opts
+	};
+	t.push(entry);
 	if (t.length > TRANSCRIPT_MAX_ENTRIES) t.splice(0, t.length - TRANSCRIPT_MAX_ENTRIES);
+};
+
+const primaryArg = (tool?: string, args?: any): string => {
+	if (!args || typeof args !== "object") return "";
+	switch (tool) {
+		case "read": case "edit": case "write": return args.path ?? "";
+		case "bash": return args.command ?? "";
+		case "web_search": return args.query ?? "";
+		case "subagent": return args.agent ? `${args.agent} "${(args.task ?? "").slice(0, 50)}"` : "";
+		case "todo": return args.action ?? "";
+		default: {
+			const first = Object.values(args).find(v => typeof v === "string");
+			return first ? String(first).slice(0, 60) : "";
+		}
+	}
+};
+
+const summarizeResult = (tool?: string, result?: any): string => {
+	if (result == null) return "ok";
+	if (typeof result === "string") return result.length > 60 ? result.slice(0, 60) + "…" : result;
+	if (typeof result === "object") {
+		if (result.exitCode != null) return `exit ${result.exitCode}`;
+		if (result.lineCount != null) return `${result.lineCount} lines`;
+		if (result.error) return String(result.error).slice(0, 60);
+	}
+	return String(result).slice(0, 60);
 };
 
 const trackAgent = (id: string, agent: string, task: string, timeout?: number) => {
@@ -589,11 +624,11 @@ async function runAgent(
 
 					if (ev.type === "tool_execution_start") {
 						trackProgress(statusId, undefined, ev.toolName);
-						pushTranscript(statusId, "tool-call", ev.toolName);
+						pushTranscript(statusId, "tool-call", ev.toolName, { toolName: ev.toolName, args: ev.args });
 					}
 
 					if (ev.type === "tool_execution_end") {
-						pushTranscript(statusId, "tool-done", ev.toolName ?? "done");
+						pushTranscript(statusId, "tool-done", ev.toolName ?? "done", { toolName: ev.toolName, result: ev.result, isError: ev.isError });
 					}
 
 					if ((ev.type === "message_end" || ev.type === "tool_result_end") && ev.message) {
@@ -995,15 +1030,34 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 				const transcriptLines = (it: InspectItem, innerW: number): string[] => {
 					const lines: string[] = [];
-					// Wrap (not truncate) so scrolling actually reveals the full content.
+					const truncate = (s: string, maxW: number) => s.length > maxW ? s.slice(0, maxW - 1) + "…" : s;
 					const wrap = (s: string, indent: string) => {
 						for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push(indent + w);
 					};
 					if (it.transcript && it.transcript.length) {
 						for (const e of it.transcript) {
-							if (e.kind === "assistant") wrap(theme.fg("text", e.text), "  ");
-							else if (e.kind === "tool-call") wrap(theme.fg("accent", `→ ${e.text}`), "");
-							else wrap(theme.fg("success", `• ${e.text}`), "");
+							if (e.kind === "assistant") {
+								wrap(theme.fg("text", e.text), "  ");
+							} else if (e.kind === "tool-call") {
+								const arg = primaryArg(e.toolName, e.args);
+								const summary = arg ? `${e.toolName ?? e.text} ${arg}` : (e.toolName ?? e.text);
+								lines.push(theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`));
+							} else if (e.kind === "tool-done") {
+								const arg = primaryArg(e.toolName, e.args);
+								const status = summarizeResult(e.toolName, e.result);
+								const summary = arg ? `${e.toolName ?? e.text} ${arg} — ${status}` : `${e.toolName ?? e.text} — ${status}`;
+								if (e.isError) {
+									lines.push(theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`));
+									if (e.result != null) {
+										const preview = typeof e.result === "string" ? e.result : JSON.stringify(e.result);
+										for (const line of preview.split("\n").slice(0, 3)) {
+											lines.push(theme.fg("dim", `  ${truncate(line, innerW - 4)}`));
+										}
+									}
+								} else {
+									lines.push(theme.fg("success", `• ${truncate(summary, innerW - 2)}`));
+								}
+							}
 						}
 					} else if (it.output) {
 						wrap(theme.fg("text", it.output), "  ");
