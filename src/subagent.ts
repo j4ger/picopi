@@ -1220,7 +1220,16 @@ export function setupSubagent(pi: ExtensionAPI) {
 					},
 					dispose() { clearInterval(interval); },
 				};
-			});
+			},
+			{
+				overlay: true,
+				overlayOptions: {
+					width: "95%",
+					anchor: "top-center" as const,
+					margin: 1,
+				},
+			}
+			);
 		},
 	});
 }
