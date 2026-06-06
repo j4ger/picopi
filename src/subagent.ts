@@ -112,6 +112,8 @@ interface SubagentStatus {
 	lastActivity?: number;
 	timeout?: number;
 	transcript?: TranscriptEntry[];
+	streamingText?: string;
+	isStreaming?: boolean;
 }
 
 interface SubagentCompleteDetails {
@@ -631,6 +633,22 @@ async function runAgent(
 						pushTranscript(statusId, "tool-done", ev.toolName ?? "done", { toolName: ev.toolName, result: ev.result, isError: ev.isError });
 					}
 
+					if (ev.type === "message_update" && ev.message) {
+						const sub = activeSubagents.get(statusId);
+						if (sub) {
+							const msg = ev.message;
+							if (msg.role === "assistant" && Array.isArray(msg.content)) {
+								const text = msg.content
+									.filter((p: any) => p.type === "text")
+									.map((p: any) => p.text)
+									.join("");
+								sub.streamingText = text || undefined;
+								sub.isStreaming = true;
+								updateStatusPanel();
+							}
+						}
+					}
+
 					if ((ev.type === "message_end" || ev.type === "tool_result_end") && ev.message) {
 						const msg = ev.message as Message;
 						base.messages.push(msg);
@@ -641,6 +659,9 @@ async function runAgent(
 							const text = msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("");
 							if (text) pushTranscript(statusId, "assistant", text);
 						}
+						// Clear streaming state — text is now in transcript
+						const sub = activeSubagents.get(statusId);
+						if (sub) { sub.streamingText = undefined; sub.isStreaming = false; }
 						const turns = base.messages.filter(m => m.role === "assistant").length;
 						const label = attempt > 0
 							? `${turns} turns (attempt ${attempt + 1}/${modelSpecs.length})`
@@ -974,6 +995,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 				transcript?: TranscriptEntry[];
 				output?: string;
 				errorMessage?: string;
+				streamingText?: string;
+				isStreaming?: boolean;
 			}
 			const buildItems = (): InspectItem[] => {
 				const live = [...activeSubagents.values()];
@@ -994,6 +1017,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 					stuck: s.status === "stuck",
 					durationMs: (s.endTime ?? Date.now()) - s.startTime,
 					transcript: s.transcript,
+					streamingText: s.streamingText,
+					isStreaming: s.isStreaming,
 				});
 				const fromHist = (r: SubagentResultEntry): InspectItem => ({
 					key: r.id ?? `${r.timestamp}-${r.agent}`,
@@ -1021,6 +1046,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				// Captured during render so the (width-less) handleInput can clamp scrolling.
 				let lastMaxOffset = 0;
 				let lastViewportH = 10;
+				let verbosity = 0; // 0=minimal, 1=normal, 2=verbose
 
 				const glyph = (it: InspectItem): string =>
 					it.stuck ? theme.fg("warning", "!")
@@ -1037,7 +1063,13 @@ export function setupSubagent(pi: ExtensionAPI) {
 					if (it.transcript && it.transcript.length) {
 						for (const e of it.transcript) {
 							if (e.kind === "assistant") {
-								wrap(theme.fg("text", e.text), "  ");
+								if (verbosity >= 2) {
+									wrap(theme.fg("text", e.text), "  ");
+								} else if (verbosity === 1) {
+									const preview = e.text.split("\n").slice(-2).join("\n");
+									wrap(theme.fg("dim", truncate(preview, innerW * 2)), "  ");
+								}
+								// verbosity 0: skip assistant text entirely
 							} else if (e.kind === "tool-call") {
 								const arg = primaryArg(e.toolName, e.args);
 								const summary = arg ? `${e.toolName ?? e.text} ${arg}` : (e.toolName ?? e.text);
@@ -1060,9 +1092,20 @@ export function setupSubagent(pi: ExtensionAPI) {
 							}
 						}
 					} else if (it.output) {
-						wrap(theme.fg("text", it.output), "  ");
+						if (verbosity >= 1) wrap(theme.fg("text", it.output), "  ");
+						else lines.push(theme.fg("dim", "  (output available, press v to show)"));
 					} else {
 						lines.push(theme.fg("dim", "  (no transcript recorded)"));
+					}
+					// Show streaming text for running agents
+					if (it.streamingText && it.isStreaming) {
+						lines.push("");
+						lines.push(theme.fg("accent", "  streaming:"));
+						const streamLines = it.streamingText.split("\n");
+						const lastLines = streamLines.slice(-5);
+						for (const l of lastLines) {
+							lines.push(theme.fg("text", `  ${truncate(l, innerW - 4)}▌`));
+						}
 					}
 					if (it.errorMessage) {
 						lines.push("");
@@ -1131,7 +1174,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							if (scrollOffset > 0) more.push("↑ more");
 							if (scrollOffset < maxOffset) more.push("↓ more");
 							const tail = more.length ? `   ${more.join("  ")}` : "";
-							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  Esc back${tail}`), width));
+							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc back${tail}`), width));
 							return out;
 						}
 
@@ -1171,7 +1214,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						if (winStart > 0) listMore.push("↑ more");
 						if (winEnd < listRows.length) listMore.push("↓ more");
 						const listTail = listMore.length ? `   ${listMore.join("  ")}` : "";
-						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  ←→ switch  Enter open  Esc close${listTail}`), width));
+						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  ←→ switch  Enter open  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc close${listTail}`), width));
 						return out;
 					},
 					invalidate() {},
@@ -1200,6 +1243,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
 							else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
 							else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
+							else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
 							else if (matchesKey(data, "escape")) {
 								if (!atBottom) atBottom = true; // resume tail-follow first
 								else expanded = false;
@@ -1215,6 +1259,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						else if (matchesKey(data, "home")) select(0);
 						else if (matchesKey(data, "end")) select(items.length - 1);
 						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = true; atBottom = true; scrollOffset = 0; }
+						else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
 						else if (matchesKey(data, "escape")) done();
 						tui.requestRender();
 					},

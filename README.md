@@ -74,6 +74,7 @@ wins). Then run `/picopi` to verify every role resolves.
 | `/review [focus]` | Run auditor on working tree |
 | `/research <q>` | Web search synthesis |
 | `/tree` | Session tree navigator |
+| `/subagents` | Live subagent inspector |
 | `/fork` | Fork current session |
 | `/compact` | Compact context |
 
@@ -102,6 +103,19 @@ Use explorer to find all auth code
 Run explorer and auditor in parallel on the auth module
 Have planner create a plan, then fixer implements it
 ```
+
+**Inspector:** Run `/subagents` to open a live TUI panel that shows running and
+completed subagents. Navigate with arrow keys, press Enter to expand a
+subagent's transcript. The inspector has three verbosity levels (cycle with `v`):
+
+| Level | What's shown |
+|-------|-------------|
+| **minimal** (default) | Tool calls/results only, plus live streaming text with `▌` cursor |
+| **normal** | Adds last 2 lines of each assistant turn |
+| **verbose** | Full assistant text for every turn |
+
+Running subagents show their current streaming output in real-time at the bottom
+of the expanded view.
 
 **Config:**
 
