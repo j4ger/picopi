@@ -14,7 +14,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -38,7 +37,7 @@ const SAFE_ENV_PREFIXES = [
 	// Provider API keys — child pi needs these to authenticate
 	"OPENAI_", "ANTHROPIC_", "GOOGLE_", "MISTRAL_", "COHERE_",
 	"GROQ_", "TOGETHER_", "FIREWORKS_", "DEEPSEEK_", "XAI_",
-	"AZURE_", "AWS_ACCESS_KEY_ID", "AWS_REGION", "AWS_DEFAULT_REGION",
+	"AZURE_", "AWS_",
 	"OLLAMA_", "LMSTUDIO_",
 	// picopi / pi
 	"PI_", "PICOPI_", "NODE_", "BUN_",
@@ -594,13 +593,20 @@ async function runAgent(
 				const proc = spawn(inv.command, inv.args, {
 					cwd: defaultCwd,
 					shell: false,
+					detached: true,
 					stdio: ["ignore", "pipe", "pipe"],
 					env: { ...sanitizeEnv(), [DEPTH_ENV]: String(childDepth), PICOPI_ACTIVE_PRESET: getActivePreset() },
 				});
+				const killTree = (sig: NodeJS.Signals) => {
+					if (proc.pid != null) {
+						try { process.kill(-proc.pid, sig); } catch {}
+					}
+				};
+				const sigkillTimers: NodeJS.Timeout[] = [];
 				let buf = "";
 
 				// Register abort handler after spawn (proc is always valid here).
-				const killOnAbort = () => { aborted = true; proc.kill("SIGTERM"); setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000); };
+				const killOnAbort = () => { aborted = true; killTree("SIGTERM"); sigkillTimers.push(setTimeout(() => killTree("SIGKILL"), 4000)); };
 				if (signal) {
 					signal.aborted ? killOnAbort() : signal.addEventListener("abort", killOnAbort, { once: true });
 				}
@@ -611,8 +617,8 @@ async function runAgent(
 					if (Date.now() - lastEventTime > effectiveTimeout * 1000) {
 						stuck = true;
 						if (attempt === 0) trackStuck(statusId);
-						proc.kill("SIGTERM");
-						setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 4000);
+						killTree("SIGTERM");
+						sigkillTimers.push(setTimeout(() => killTree("SIGKILL"), 4000));
 					}
 				}, WATCHDOG_INTERVAL);
 
@@ -681,17 +687,26 @@ async function runAgent(
 				// Safety: resolve after 2× effective timeout to prevent hanging forever.
 				let resolved = false;
 				const safeResolve = (code: number) => { if (!resolved) { resolved = true; resolve(code); } };
-				const hangTimer = setTimeout(() => safeResolve(1), effectiveTimeout * 2 * 1000);
+				const hangTimer = setTimeout(() => {
+					killTree("SIGTERM");
+					sigkillTimers.push(setTimeout(() => killTree("SIGKILL"), 4000));
+					safeResolve(1);
+				}, effectiveTimeout * 2 * 1000);
 
-				proc.on("close", (c) => {
+				const cleanup = () => {
 					clearTimeout(hangTimer);
 					if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
+					for (const t of sigkillTimers) clearTimeout(t);
+					sigkillTimers.length = 0;
+					if (signal) signal.removeEventListener("abort", killOnAbort);
+				};
+				proc.on("close", (c) => {
+					cleanup();
 					if (buf.trim()) onLine(buf);
 					safeResolve(c ?? 0);
 				});
 				proc.on("error", () => {
-					clearTimeout(hangTimer);
-					if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
+					cleanup();
 					safeResolve(1);
 				});
 

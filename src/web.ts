@@ -50,6 +50,49 @@ async function readCapped(res: Response): Promise<string> {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
+function assertSafeUrl(urlStr: string): URL {
+	const parsed = new URL(urlStr);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new Error(`URL protocol must be http or https, got ${parsed.protocol}`);
+	}
+	const host = parsed.hostname.toLowerCase();
+	if (host === "localhost") throw new Error("URL targets localhost (loopback)");
+	if (host.endsWith(".internal") || host.endsWith(".local"))
+		throw new Error(`URL targets internal/local hostname: ${host}`);
+	const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+	if (ipv4) {
+		const a = Number(ipv4[1]), b = Number(ipv4[2]), c = Number(ipv4[3]), d = Number(ipv4[4]);
+		if (a === 127) throw new Error("URL targets loopback (127.0.0.0/8)");
+		if (a === 10) throw new Error("URL targets private network (10.0.0.0/8)");
+		if (a === 169 && b === 254) throw new Error("URL targets link-local (169.254.0.0/16)");
+		if (a === 192 && b === 168) throw new Error("URL targets private network (192.168.0.0/16)");
+		if (a === 172 && b >= 16 && b <= 31) throw new Error("URL targets private network (172.16.0.0/12)");
+	}
+	if (host.includes(":")) {
+		const ipv6 = host.replace(/%[a-z0-9]+$/i, "").toLowerCase();
+		if (ipv6 === "::1" || ipv6 === "0:0:0:0:0:0:0:1") throw new Error("URL targets loopback (::1)");
+		if (ipv6.startsWith("fc") || ipv6.startsWith("fd")) throw new Error("URL targets unique-local (fc00::/7)");
+		if (ipv6.startsWith("fe80")) throw new Error("URL targets link-local (fe80::/10)");
+	}
+	return parsed;
+}
+
+async function fetchSafe(url: string, headers: Record<string, string>, signal: AbortSignal): Promise<Response> {
+	let parsed = assertSafeUrl(url);
+	let remaining = 5;
+	while (true) {
+		const res = await fetch(parsed.href, { headers, signal, redirect: "manual" });
+		if (res.status >= 300 && res.status < 400 && res.status !== 304 && res.headers.has("location")) {
+			if (--remaining < 0) throw new Error("too many redirects");
+			const loc = new URL(res.headers.get("location")!, parsed.href);
+			assertSafeUrl(loc.href);
+			parsed = loc;
+			continue;
+		}
+		return res;
+	}
+}
+
 function envKey(name: string): string | undefined {
 	const v = process.env[name];
 	return v && v.trim() ? v.trim() : undefined;
@@ -83,8 +126,8 @@ const ENTITIES: Record<string, string> = {
 };
 function decodeEntities(s: string): string {
 	return s
-		.replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-		.replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+		.replace(/&#(\d+);/g, (_, n) => { const cp = Number(n); return cp >= 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : _; })
+		.replace(/&#x([0-9a-f]+);/gi, (_, n) => { const cp = parseInt(n, 16); return cp >= 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : _; })
 		.replace(/&[a-z]+;/gi, (m) => ENTITIES[m.toLowerCase()] ?? m);
 }
 function htmlToText(html: string): string {
@@ -128,7 +171,8 @@ async function searchExa(key: string, query: string, n: number, signal: AbortSig
 		signal,
 	});
 	if (!res.ok) throw new Error(`exa ${res.status}`);
-	const data: any = await res.json();
+	const body = await readCapped(res);
+	const data: any = JSON.parse(body);
 	return {
 		provider: "exa",
 		hits: (data.results ?? []).map((r: any) => ({ title: r.title ?? r.url, url: r.url, snippet: r.text?.slice(0, 400) })),
@@ -146,7 +190,8 @@ async function searchPerplexity(key: string, query: string, model: string, signa
 		signal,
 	});
 	if (!res.ok) throw new Error(`perplexity ${res.status}`);
-	const data: any = await res.json();
+	const body = await readCapped(res);
+	const data: any = JSON.parse(body);
 	const answer = data.choices?.[0]?.message?.content ?? "";
 	const hits: SearchHit[] = (data.citations ?? []).map((u: string, i: number) => ({ title: `[${i + 1}] ${u}`, url: u }));
 	return { provider: "perplexity", answer, hits };
@@ -156,7 +201,8 @@ async function searchBrave(key: string, query: string, n: number, signal: AbortS
 	const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
 	const res = await fetch(url, { headers: { accept: "application/json", "x-subscription-token": key, "user-agent": UA }, signal });
 	if (!res.ok) throw new Error(`brave ${res.status}`);
-	const data: any = await res.json();
+	const body = await readCapped(res);
+	const data: any = JSON.parse(body);
 	return {
 		provider: "brave",
 		hits: (data.web?.results ?? []).map((r: any) => ({ title: r.title, url: r.url, snippet: r.description })),
@@ -167,7 +213,8 @@ async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): 
 	const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
 	const res = await fetch(url, { headers: { "user-agent": UA }, signal });
 	if (!res.ok) throw new Error(`duckduckgo ${res.status}`);
-	const html = await res.text();
+	const body = await readCapped(res);
+	const html = body;
 	const hits: SearchHit[] = [];
 	const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
 	let m: RegExpExecArray | null;
@@ -307,7 +354,7 @@ export function setupWeb(pi: ExtensionAPI) {
 					const text = await withTimeout(
 						FETCH_TIMEOUT,
 						async (s) => {
-							const res = await fetch(url, { headers: { "user-agent": UA, accept: "text/html,application/json,text/plain,*/*" }, signal: s, redirect: "follow" });
+							const res = await fetchSafe(url, { "user-agent": UA, accept: "text/html,application/json,text/plain,*/*" }, s);
 							if (!res.ok) throw new Error(`HTTP ${res.status}`);
 							const ct = res.headers.get("content-type") ?? "";
 							const body = await readCapped(res);

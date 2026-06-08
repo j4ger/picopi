@@ -78,8 +78,8 @@ export function setupUndo(pi: ExtensionAPI) {
 		//  1. overwrite tracked files (and re-create tracked files deleted since)
 		//     with the snapshot's content;
 		//  2. remove files that became tracked AFTER the snapshot, so the tree
-		//     matches the checkpoint. Those are recoverable from git (the stash
-		//     ref / reflog), so this is safe.
+		//     matches the checkpoint. Those are recoverable from a git ref
+		//     (refs/picopi/undo-backup/*), so this is safe.
 		// Untracked files are intentionally left untouched (never auto-deleted).
 		//
 		// Safety: stash current state first so the user can recover if needed.
@@ -89,7 +89,10 @@ export function setupUndo(pi: ExtensionAPI) {
 		if (code !== 0) return false;
 		const added = gitFileList((await pi.exec("git", ["ls-files"])).stdout).filter((f) => !snapFiles.has(f));
 		if (added.length) await pi.exec("git", ["rm", "-f", "--", ...added]);
-		if (backup) pi.appendEntry(CHECKPOINT_TYPE, { entryId: `backup-${Date.now()}`, ref: backup, createdAt: Date.now() });
+		if (backup) {
+			await pi.exec("git", ["update-ref", `refs/picopi/undo-backup/${Date.now()}`, backup]);
+			pi.appendEntry(CHECKPOINT_TYPE, { entryId: `backup-${Date.now()}`, ref: backup, createdAt: Date.now() });
+		}
 		return true;
 	}
 

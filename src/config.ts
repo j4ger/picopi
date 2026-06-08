@@ -116,7 +116,7 @@ function persistPreset(name: string): void {
 		const presets = state.presets ?? {};
 		if (name) presets[process.cwd()] = name;
 		else delete presets[process.cwd()];
-		const next: { presets: Record<string, string> } = { presets };
+		const next = { ...state, presets };
 		fs.writeFileSync(statePath(), JSON.stringify(next, null, 2), "utf-8");
 	} catch {
 		/* can't write — non-fatal */
