@@ -236,7 +236,7 @@ async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): 
 	}
 	// If DDG's HTML structure changed and no results were parsed, throw so
 	// the caller can surface a clear error instead of silently returning 0 hits.
-	if (hits.length === 0 && html.length > 1000) {
+	if (hits.length === 0) {
 		throw new Error("duckduckgo: no results parsed — HTML layout may have changed");
 	}
 	return { provider: "duckduckgo", hits };
@@ -255,7 +255,7 @@ async function runSearch(query: string, n: number, requested: string | undefined
 			? [exa && "exa", pplx && "perplexity", brave && "brave", "duckduckgo"].filter(Boolean) as string[]
 			: [provider];
 
-	let lastErr: unknown;
+	let lastErr: { provider: string; error: unknown } | null = null;
 	for (const p of tryOrder) {
 		try {
 			if (p === "exa" && exa) return await searchExa(exa, query, n, signal);
@@ -265,10 +265,14 @@ async function runSearch(query: string, n: number, requested: string | undefined
 			// requested a keyed provider but no key
 			throw new Error(`${p}: missing API key`);
 		} catch (e) {
-			lastErr = e;
+			lastErr = { provider: p, error: e };
 		}
 	}
-	throw lastErr ?? new Error("no search provider available");
+	if (lastErr) {
+		const msg = lastErr.error instanceof Error ? lastErr.error.message : String(lastErr.error);
+		throw new Error(`web search failed (provider=${lastErr.provider}): ${msg}`);
+	}
+	throw new Error("no search provider available");
 }
 
 function formatSearch(query: string, r: SearchResult): string {

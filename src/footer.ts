@@ -73,13 +73,14 @@ export function setupFooter(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
-			requestRender = () => tui.requestRender();
+			const myRender = () => tui.requestRender();
+			requestRender = myRender;
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
 
 			return {
 				dispose: () => {
 					unsub();
-					if (requestRender) requestRender = undefined;
+					if (requestRender === myRender) requestRender = undefined;
 				},
 				invalidate() {},
 				render(width: number): string[] {
