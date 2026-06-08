@@ -1071,7 +1071,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 				const transcriptLines = (it: InspectItem, innerW: number): string[] => {
 					const lines: string[] = [];
-					const truncate = (s: string, maxW: number) => s.length > maxW ? s.slice(0, maxW - 1) + "…" : s;
+					const truncate = (s: string, maxW: number) => truncateToWidth(s, Math.max(1, maxW), "…");
 					const wrap = (s: string, indent: string) => {
 						for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push(indent + w);
 					};
@@ -1131,7 +1131,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 				// Self-refresh so running transcripts and elapsed times update live; a
 				// completion that lands while open is picked up via rebuildResults within 1s.
-				const interval = setInterval(() => { rebuildResults(ctx); tui.requestRender(); }, 1000);
+				const interval = setInterval(() => { if (activeSubagents.size > 0) { rebuildResults(ctx); tui.requestRender(); } }, 1000);
 
 				return {
 					render(width: number): string[] {
@@ -1139,7 +1139,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						const innerW = Math.max(0, width - 2);
 						const hr = "─".repeat(innerW);
 						const rows = tui.terminal?.rows ?? 24;
-						const viewportH = Math.max(3, rows - 6);
+						const viewportH = Math.max(1, rows - 6);
 						lastViewportH = viewportH;
 						const row = (content: string): string => {
 							const clipped = truncateToWidth(content, innerW);
@@ -1260,8 +1260,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
 							else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
 							else if (matchesKey(data, "escape")) {
-								if (!atBottom) atBottom = true; // resume tail-follow first
-								else expanded = false;
+								expanded = false;
 							}
 							tui.requestRender();
 							return;
@@ -1269,11 +1268,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 						if (matchesKey(data, "up") || matchesKey(data, "left")) select(idx - 1);
 						else if (matchesKey(data, "down") || matchesKey(data, "right")) select(idx + 1);
-						else if (matchesKey(data, "pageUp")) select(idx - 5);
-						else if (matchesKey(data, "pageDown")) select(idx + 5);
+						else if (matchesKey(data, "pageUp")) select(idx - Math.max(1, Math.floor(lastViewportH / 2)));
+						else if (matchesKey(data, "pageDown")) select(idx + Math.max(1, Math.floor(lastViewportH / 2)));
 						else if (matchesKey(data, "home")) select(0);
 						else if (matchesKey(data, "end")) select(items.length - 1);
-						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = true; atBottom = true; scrollOffset = 0; }
+						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { const opening = items[idx]; expanded = true; atBottom = !!opening?.running; scrollOffset = 0; }
 						else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
 						else if (matchesKey(data, "escape")) done();
 						tui.requestRender();
