@@ -267,6 +267,8 @@ function isModelError(r: RunResult): boolean {
 
 const MAX_DISPLAY_SUBAGENTS = 4;
 const MAX_RUNNING_IN_STATS = 3;
+// Status symbols: running=◌ done=✓ stuck=⚠ failed=✗
+const STATUS_ICON: Record<string, string> = { running: "◌", done: "✓", stuck: "⚠", failed: "✗" };
 
 function updateStatusPanel(context?: any) {
 	if (context) extensionCtx = context;
@@ -311,52 +313,62 @@ function updateStatusPanel(context?: any) {
 								1, 0
 							));
 
-							if (counts.running) container.addChild(new Text(theme.fg("warning", ` ${counts.running} running`), 1, 0));
-							if (counts.done) container.addChild(new Text(theme.fg("success", ` ${counts.done} done`), 1, 0));
-							if (counts.stuck) container.addChild(new Text(theme.fg("warning", ` ${counts.stuck} stuck`), 1, 0));
-							if (counts.failed) container.addChild(new Text(theme.fg("error", ` ${counts.failed} failed`), 1, 0));
+							if (counts.stuck) container.addChild(new Text(theme.fg("warning", ` ⚠ ${counts.stuck} stuck`), 1, 0));
+							if (counts.failed) container.addChild(new Text(theme.fg("error", ` ✗ ${counts.failed} failed`), 1, 0));
+							if (counts.running) container.addChild(new Text(theme.fg("warning", ` ◌ ${counts.running} running`), 1, 0));
+							if (counts.done) container.addChild(new Text(theme.fg("success", ` ✓ ${counts.done} done`), 1, 0));
 
-							// Still show the most relevant running agents
+							// Show stuck agents first, then running ones (prioritize attention-needed)
+							const stuckAgents = sorted.filter(s => s.status === "stuck");
 							const running = sorted.filter(s => s.status === "running");
-							if (running.length) {
+							const prioritized = [...stuckAgents, ...running];
+							if (prioritized.length) {
 								container.addChild(new Spacer(1));
-								for (const sub of running.slice(0, MAX_RUNNING_IN_STATS)) {
+								for (const sub of prioritized.slice(0, MAX_RUNNING_IN_STATS)) {
 									const elapsed = formatDuration(Date.now() - sub.startTime);
+									const icon = STATUS_ICON[sub.status] ?? "◌";
+									const col = sub.status === "stuck" ? "warning" : "warning";
 									container.addChild(new Text(
-										theme.fg("warning", ` ▸ ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
+										theme.fg(col, ` ${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
 										1, 0
 									));
 								}
-								if (running.length > MAX_RUNNING_IN_STATS) {
-									container.addChild(new Text(theme.fg("dim", ` +${running.length - MAX_RUNNING_IN_STATS} more`), 1, 0));
+								if (prioritized.length > MAX_RUNNING_IN_STATS) {
+									container.addChild(new Text(theme.fg("dim", ` +${prioritized.length - MAX_RUNNING_IN_STATS} more`), 1, 0));
 								}
 							}
 						} else {
+							// Compute dynamic display width for agent names
+							const nameW = Math.min(16, Math.max(8, ...sorted.map(s => visibleWidth(s.agent))));
 							for (const sub of sorted) {
-								const icon = sub.status === "running" ? "o" : sub.status === "done" ? "+" : sub.status === "stuck" ? "!" : "x";
+								const icon = STATUS_ICON[sub.status] ?? "◌";
 								const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
 								const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
 
 								container.addChild(new Text(
-									theme.fg(color, ` ${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
+									theme.fg(color, ` ${icon} ${truncateToWidth(sub.agent, nameW, "")}`) + theme.fg("dim", ` ${elapsed}`),
 									1, 0
 								));
 
 								if (sub.status === "stuck") {
 									container.addChild(new Text(theme.fg("warning", "    timeout"), 1, 0));
+								} else if (sub.status === "failed") {
+									container.addChild(new Text(theme.fg("error", "    failed"), 1, 0));
 								} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
 									container.addChild(new Text(theme.fg("dim", `    ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 1, 0));
 								}
 							}
 
-							const running = [...activeSubagents.values()].filter(s => s.status === "running").length;
+							const activeRunning = [...activeSubagents.values()].filter(s => s.status === "running").length;
 							const stuck = [...activeSubagents.values()].filter(s => s.status === "stuck").length;
-							if (running || stuck) {
+							const failed2 = [...activeSubagents.values()].filter(s => s.status === "failed").length;
+							if (activeRunning || stuck || failed2) {
 								container.addChild(new Spacer(1));
 								const parts: string[] = [];
-								if (running) parts.push(`${running} active`);
-								if (stuck) parts.push(`${stuck} stuck`);
-								container.addChild(new Text(theme.fg(stuck ? "warning" : "muted", parts.join(", ")), 1, 0));
+								if (stuck) parts.push(`⚠ ${stuck} stuck`);
+								if (failed2) parts.push(`✗ ${failed2} failed`);
+								if (activeRunning) parts.push(`◌ ${activeRunning} running`);
+								container.addChild(new Text(theme.fg(stuck || failed2 ? "warning" : "muted", parts.join(" ")), 1, 0));
 							}
 						}
 						container.addChild(new Spacer(1));
@@ -368,17 +380,21 @@ function updateStatusPanel(context?: any) {
 					return {
 						render: (w: number) => {
 							const border = (s: string) => theme.fg("accent", s);
-							const innerW = Math.max(0, w - 2);
+							// Dynamic width: fit content, clamp to avoid excessively wide panel
+							const rendered = container.render(w - 2);
+							const maxContent = rendered.reduce((mx, l) => Math.max(mx, visibleWidth(l)), 0);
+							const dynInner = Math.min(w - 2, Math.max(22, maxContent));
+							const innerW = dynInner;
 							const hr = "─".repeat(innerW);
 							const out: string[] = [];
 							out.push(border("┌" + hr + "┐"));
-							for (const raw of container.render(innerW)) {
+							for (const raw of rendered) {
 								const inner = truncateToWidth(raw, innerW);
 								const pad = innerW - visibleWidth(inner);
 								out.push(border("│") + inner + " ".repeat(Math.max(0, pad)) + border("│"));
 							}
 							out.push(border("└" + hr + "┘"));
-							return out;
+							return out.map(line => truncateToWidth(line, w));
 						},
 						invalidate: () => container.invalidate(),
 						handleInput: () => {},
@@ -782,12 +798,18 @@ export function setupSubagent(pi: ExtensionAPI) {
 	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
 		const d = message.details as SubagentCompleteDetails | undefined;
 		if (!d) return new Text(String(message.content), 0, 0);
-		const icon = d.ok ? theme.fg("success", "+") : theme.fg("error", "x");
+		const icon = d.ok ? theme.fg("success", "✓") : theme.fg("error", "✗");
 		const agent = theme.bold(theme.fg("accent", d.agent));
 		const dur = theme.fg("dim", formatDuration(d.durationMs));
 		const model = d.model ? theme.fg("dim", ` ${d.model}`) : "";
 		let text = `${icon} ${agent}${model} ${dur}`;
-		if (d.preview) text += `\n${theme.fg("dim", d.preview)}`;
+		if (d.preview) {
+			const previewLine = d.ok
+				? theme.fg("dim", d.preview)
+				: theme.fg("error", `✗ ${d.preview}`);
+			text += `\n${previewLine}`;
+		}
+		text += theme.fg("dim", "  /subagents");
 		return new Text(text, 1, 0);
 	});
 
@@ -963,21 +985,27 @@ export function setupSubagent(pi: ExtensionAPI) {
 			const md = getMarkdownTheme();
 			const c = new Container();
 			for (const r of details.results) {
-				const icon = r.stuck ? theme.fg("warning", "!") : failed(r) ? theme.fg("error", "x") : theme.fg("success", "+");
+				const icon = r.stuck ? theme.fg("warning", "⚠") : failed(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const head = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${r.model ? theme.fg("dim", ` ${r.model}`) : ""}`;
-				c.addChild(new Text(head, 0, 0));
-				if (r.stuck) c.addChild(new Text(theme.fg("warning", "Provider stopped responding (timeout)"), 0, 0));
 				if (expanded) {
+					c.addChild(new Text(head, 0, 0));
+					if (r.stuck) c.addChild(new Text(theme.fg("warning", "Provider stopped responding (timeout)"), 0, 0));
 					c.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
 					const out = finalOutput(r.messages) || output(r);
 					if (out) { c.addChild(new Spacer(1)); c.addChild(new Markdown(out.trim(), 0, 0, md)); }
+					c.addChild(new Spacer(1));
 				} else {
-					const out = (finalOutput(r.messages) || output(r)).split("\n").slice(0, 4).join("\n");
-					c.addChild(new Text(theme.fg("toolOutput", out), 0, 0));
+					// Compact: one row per agent with short preview
+					const rawOut = finalOutput(r.messages) || output(r);
+					const preview = rawOut.split("\n").find(l => l.trim()) ?? "";
+					const previewStr = preview.length > 80 ? preview.slice(0, 80) + "…" : preview;
+					const previewColored = failed(r)
+						? theme.fg("error", `✗ ${previewStr}`)
+						: theme.fg("toolOutput", previewStr);
+					c.addChild(new Text(`${head}  ${previewColored}`, 0, 0));
 				}
-				c.addChild(new Spacer(1));
 			}
-			if (!expanded) c.addChild(new Text(theme.fg("muted", "(Ctrl+O to expand)"), 0, 0));
+			if (!expanded) c.addChild(new Text(theme.fg("muted", "(Ctrl+O to expand · /subagents for details)"), 0, 0));
 			return c;
 		},
 	});
@@ -991,10 +1019,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				return;
 			}
 			rebuildResults(ctx);
-			if (activeSubagents.size === 0 && resultHistory.length === 0) {
-				ctx.ui.notify("No subagents yet", "info");
-				return;
-			}
+			// Continue into the inspector even when empty — it shows guidance
 			// Combined live + history inspector. Selection is keyed by a stable `key`
 			// (the subagent id) so an agent finishing mid-view doesn't shift the
 			// cursor when it migrates from activeSubagents to the persisted history.
@@ -1061,11 +1086,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 				// Captured during render so the (width-less) handleInput can clamp scrolling.
 				let lastMaxOffset = 0;
 				let lastViewportH = 10;
-				let verbosity = 0; // 0=minimal, 1=normal, 2=verbose
+				let verbosity = 1; // 0=minimal, 1=normal, 2=verbose
 
 				const glyph = (it: InspectItem): string =>
-					it.stuck ? theme.fg("warning", "!")
-						: it.running ? theme.fg("warning", "◐")
+					it.stuck ? theme.fg("warning", "⚠")
+						: it.running ? theme.fg("warning", "◌")
 							: it.ok ? theme.fg("success", "✓")
 								: theme.fg("error", "✗");
 
@@ -1081,8 +1106,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 								if (verbosity >= 2) {
 									wrap(theme.fg("text", e.text), "  ");
 								} else if (verbosity === 1) {
-									const preview = e.text.split("\n").slice(-2).join("\n");
-									wrap(theme.fg("dim", truncate(preview, innerW * 2)), "  ");
+									const previewLines = e.text.split("\n").filter(l => l.trim());
+									const preview = previewLines.slice(0, 4).join("\n");
+									wrap(theme.fg("dim", truncate(preview, innerW * 4)), "  ");
 								}
 								// verbosity 0: skip assistant text entirely
 							} else if (e.kind === "tool-call") {
@@ -1097,14 +1123,17 @@ export function setupSubagent(pi: ExtensionAPI) {
 									lines.push(theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`));
 									if (e.result != null) {
 										const preview = typeof e.result === "string" ? e.result : JSON.stringify(e.result);
-										for (const line of preview.split("\n").slice(0, 3)) {
-											lines.push(theme.fg("dim", `  ${truncate(line, innerW - 4)}`));
+										for (const line of preview.split("\n").slice(0, 6)) {
+											lines.push(theme.fg("error", `  ${truncate(line, innerW - 4)}`));
 										}
 									}
 								} else {
 									lines.push(theme.fg("success", `• ${truncate(summary, innerW - 2)}`));
 								}
 							}
+						}
+						if (lines.length === 0) {
+							lines.push(theme.fg("dim", "  (assistant output hidden — press v)"));
 						}
 					} else if (it.output) {
 						if (verbosity >= 1) wrap(theme.fg("text", it.output), "  ");
@@ -1118,8 +1147,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 						lines.push(theme.fg("accent", "  streaming:"));
 						const streamLines = it.streamingText.split("\n");
 						const lastLines = streamLines.slice(-5);
-						for (const l of lastLines) {
-							lines.push(theme.fg("text", `  ${truncate(l, innerW - 4)}▌`));
+						for (let i = 0; i < lastLines.length; i++) {
+							const cursor = i === lastLines.length - 1 ? "▌" : "";
+							lines.push(theme.fg("text", `  ${truncate(lastLines[i], innerW - 4)}${cursor}`));
 						}
 					}
 					if (it.errorMessage) {
@@ -1139,7 +1169,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						const innerW = Math.max(0, width - 2);
 						const hr = "─".repeat(innerW);
 						const rows = tui.terminal?.rows ?? 24;
-						const viewportH = Math.max(1, rows - 6);
+						const viewportH = Math.max(4, Math.floor(rows * 0.55));
 						lastViewportH = viewportH;
 						const row = (content: string): string => {
 							const clipped = truncateToWidth(content, innerW);
@@ -1153,8 +1183,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 							out.push(row(theme.fg("accent", " Subagent Inspector ")));
 							out.push(border("├" + hr + "┤"));
 							out.push(row(theme.fg("dim", "  No subagents yet")));
+							out.push(row(theme.fg("dim", "  Delegated subagent runs will appear here")));
+							out.push(row(theme.fg("dim", "  when you use the subagent tool.")));
+							out.push(row(theme.fg("dim", "  Results are scoped to the current branch.")));
 							out.push(border("└" + hr + "┘"));
-							out.push(truncateToWidth(theme.fg("dim", "  Esc close"), width));
+							out.push(truncateToWidth(theme.fg("dim", "  q quit"), width));
 							return out;
 						}
 
@@ -1173,9 +1206,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 						if (expanded) {
 							const model = cur.model ? theme.fg("dim", ` ${cur.model}`) : "";
-							const status = cur.running ? theme.fg("warning", cur.stuck ? " · stuck" : " · running") : theme.fg("dim", " · done");
+							const status = cur.running ? theme.fg("warning", cur.stuck ? " · stuck" : " · running") : cur.ok ? theme.fg("dim", " · done") : theme.fg("error", " · failed");
 							out.push(row(`${glyph(cur)} ${theme.fg("accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${status}`));
-							out.push(row(theme.fg("dim", `  ${cur.subLabel}`)));
+							for (const w of wrapTextWithAnsi(`  ${cur.subLabel}`, Math.max(1, innerW))) {
+								out.push(row(theme.fg("dim", w)));
+							}
 							out.push(border("├" + hr + "┤"));
 							const lines = transcriptLines(cur, innerW);
 							const maxOffset = Math.max(0, lines.length - viewportH);
@@ -1189,7 +1224,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							if (scrollOffset > 0) more.push("↑ more");
 							if (scrollOffset < maxOffset) more.push("↓ more");
 							const tail = more.length ? `   ${more.join("  ")}` : "";
-							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc back${tail}`), width));
+							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc back  q quit${tail}`), width));
 							return out;
 						}
 
@@ -1222,14 +1257,21 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const selRow = listRows.findIndex((r) => r.itemIdx === idx);
 							winStart = Math.max(0, Math.min(selRow - Math.floor(viewportH / 2), listRows.length - viewportH));
 						}
-						const winEnd = winStart + viewportH;
+						// Adjust to item block boundaries: don't start on a sub-row or end mid-pair
+						while (winStart > 0 && listRows[winStart].itemIdx !== null && listRows[winStart - 1].itemIdx === listRows[winStart].itemIdx) {
+							winStart--;
+						}
+						let winEnd = Math.min(winStart + viewportH, listRows.length);
+						while (winEnd < listRows.length && listRows[winEnd - 1].itemIdx !== null && listRows[winEnd].itemIdx === listRows[winEnd - 1].itemIdx) {
+							winEnd++;
+						}
 						for (const r of listRows.slice(winStart, winEnd)) out.push(row(r.line));
 						out.push(border("└" + hr + "┘"));
 						const listMore: string[] = [];
 						if (winStart > 0) listMore.push("↑ more");
 						if (winEnd < listRows.length) listMore.push("↓ more");
 						const listTail = listMore.length ? `   ${listMore.join("  ")}` : "";
-						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  ←→ switch  Enter open  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc close${listTail}`), width));
+						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  ←→ switch  Enter open  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q quit${listTail}`), width));
 						return out;
 					},
 					invalidate() {},
@@ -1237,7 +1279,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						if (matchesKey(data, "ctrl+c")) { done(); return; }
 						const items = buildItems();
 						if (items.length === 0) {
-							if (matchesKey(data, "escape")) done();
+							if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
 							return;
 						}
 						let idx = items.findIndex((i) => i.key === selectedKey);
@@ -1262,6 +1304,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							else if (matchesKey(data, "escape")) {
 								expanded = false;
 							}
+							else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
 							tui.requestRender();
 							return;
 						}
@@ -1274,7 +1317,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						else if (matchesKey(data, "end")) select(items.length - 1);
 						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { const opening = items[idx]; expanded = true; atBottom = !!opening?.running; scrollOffset = 0; }
 						else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
-						else if (matchesKey(data, "escape")) done();
+						else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
 						tui.requestRender();
 					},
 					dispose() { clearInterval(interval); },
@@ -1286,6 +1329,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					width: "95%",
 					anchor: "top-center" as const,
 					margin: 1,
+					maxHeight: "90%",
 				},
 			}
 			);
