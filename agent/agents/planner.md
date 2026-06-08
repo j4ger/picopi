@@ -19,4 +19,4 @@ Numbered steps. **Each step = one fixer-sized task**: one cohesive change, ~1–
 ## Risks
 Edge cases, ordering constraints (which steps must come first), anything that could break.
 
-Be concrete. No prose padding.
+Be concrete. No prose padding. If the request rests on a wrong assumption or you spot an adjacent bug, flag it instead of planning around it.
