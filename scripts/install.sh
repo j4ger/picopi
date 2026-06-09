@@ -106,3 +106,4 @@ if [ "$in_path" = no ]; then
 fi
 
 echo -e "$H done — run ${B}picopi${X} to start"
+echo -e "  ${D}Optional:${X} run ${B}npm install${X} (or ${B}bun install${X}, ${B}pnpm install${X}) in the repo for better web HTML-to-text conversion (turndown)"

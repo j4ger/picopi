@@ -2,7 +2,11 @@
   "name": "picopi",
   "version": "0.1.0",
   "description": "An opinionated pi setup: web access, opencode-style undo, todos, slim multi-agent, and role/fallback model resolution — packaged with Nix.",
-  "keywords": ["pi-package", "pi", "coding-agent"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent"
+  ],
   "author": "j4ger",
   "license": "MIT",
   "type": "module",
@@ -18,16 +22,29 @@
     "node": ">=18.0.0"
   },
   "pi": {
-    "extensions": ["./src"],
-    "agents": ["./agent/agents"],
-    "prompts": ["./agent/prompts"],
-    "themes": ["./agent/themes"]
+    "extensions": [
+      "./src"
+    ],
+    "agents": [
+      "./agent/agents"
+    ],
+    "prompts": [
+      "./agent/prompts"
+    ],
+    "themes": [
+      "./agent/themes"
+    ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.78.0",
     "@earendil-works/pi-agent-core": ">=0.78.0",
+    "@earendil-works/pi-ai": ">=0.78.0",
     "@earendil-works/pi-coding-agent": ">=0.78.0",
     "@earendil-works/pi-tui": ">=0.78.0",
     "typebox": "*"
+  },
+  "dependencies": {
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "turndown": "^7.2.4"
   }
 }

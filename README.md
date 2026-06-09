@@ -29,6 +29,9 @@ nix profile install github:j4ger/picopi --accept-flake-config
 ```bash
 git clone https://github.com/j4ger/picopi && cd picopi
 ./scripts/install.sh
+
+# Optional: install for better web HTML-to-text conversion (turndown)
+npm install            # or: bun install / pnpm install
 ```
 
 ### Authenticate

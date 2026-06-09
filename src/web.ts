@@ -171,12 +171,55 @@ function createLookup(hostname: string) {
 	};
 }
 
-/** Replacement for global fetch that uses Node's http/https modules with a
- *  custom lookup that validates IPs at connection time.  Returns a standard
- *  Response object so callers (including fetchSafe) work unchanged. */
-function nodeFetch(targetUrl: URL, headers: Record<string, string>, signal: AbortSignal): Promise<Response> {
+interface NodeFetchInit {
+    method?: string;
+    headers: Record<string, string>;
+    body?: string;
+    signal: AbortSignal;
+}
+
+const proxyAgentCache = new Map<string, any>();
+
+function getProxyEnv(name: string): string | undefined {
+    return process.env[name.toUpperCase()] ?? process.env[name.toLowerCase()];
+}
+
+async function getProxyAgent(targetUrl: URL): Promise<any | undefined> {
+    const isHttps = targetUrl.protocol === "https:";
+    const proxyUrl = getProxyEnv(isHttps ? "HTTPS_PROXY" : "HTTP_PROXY") ?? getProxyEnv("ALL_PROXY");
+    if (!proxyUrl) return undefined;
+    const noProxy = getProxyEnv("NO_PROXY");
+    if (noProxy) {
+        const host = targetUrl.hostname.toLowerCase();
+        const parts = noProxy.split(",").map(p => p.trim().toLowerCase()).filter(Boolean);
+        for (const p of parts) {
+            if (p === "*") return undefined;
+            if (p === host) return undefined;
+            if (p.startsWith(".") && host.endsWith(p)) return undefined;
+        }
+    }
+    const cached = proxyAgentCache.get(proxyUrl);
+    if (cached) return cached;
+    try {
+        let agent: any;
+        if (isHttps) {
+            const { HttpsProxyAgent } = await import("https-proxy-agent");
+            agent = new HttpsProxyAgent(proxyUrl);
+        } else {
+            const { HttpProxyAgent } = await import("http-proxy-agent");
+            agent = new HttpProxyAgent(proxyUrl);
+        }
+        proxyAgentCache.set(proxyUrl, agent);
+        return agent;
+    } catch {
+        return undefined;
+    }
+}
+
+async function nodeFetch(targetUrl: URL, init: NodeFetchInit): Promise<Response> {
+	const agent = await getProxyAgent(targetUrl);
 	return new Promise((resolve, reject) => {
-		if (signal.aborted) {
+		if (init.signal.aborted) {
 			reject(new DOMException("The operation was aborted", "AbortError"));
 			return;
 		}
@@ -186,14 +229,26 @@ function nodeFetch(targetUrl: URL, headers: Record<string, string>, signal: Abor
 		const hostname = targetUrl.hostname;
 		const port = targetUrl.port ? parseInt(targetUrl.port, 10) : (isHttps ? 443 : 80);
 
+		const method = init.method ?? "GET";
 		const options: http.RequestOptions = {
 			hostname,
 			port,
 			path: targetUrl.pathname + targetUrl.search,
-			method: "GET",
-			headers,
-			lookup: createLookup(hostname),
+			method,
+			headers: init.headers,
 		};
+
+		if (agent) {
+			// When a proxy is active, DNS-rebinding SSRF protection is bypassed;
+			// only hostname-level checks in validateUrl apply.
+			options.agent = agent;
+		} else {
+			options.lookup = createLookup(hostname);
+		}
+
+		if (init.body) {
+			init.headers["Content-Length"] = String(Buffer.byteLength(init.body));
+		}
 
 		let settled = false;
 		const settleOnce = (err: unknown) => {
@@ -242,23 +297,37 @@ function nodeFetch(targetUrl: URL, headers: Record<string, string>, signal: Abor
 
 		req.on("error", (err) => settleOnce(err));
 
-		signal.addEventListener("abort", () => {
+		init.signal.addEventListener("abort", () => {
 			req.destroy();
 			settleOnce(new DOMException("The operation was aborted", "AbortError"));
 		}, { once: true });
 
+		if (init.body) {
+			req.write(init.body);
+		}
 		req.end();
 	});
 }
 
-async function fetchSafe(url: string, headers: Record<string, string>, signal: AbortSignal): Promise<Response> {
+interface FetchSafeInit {
+    method?: string;
+    headers: Record<string, string>;
+    body?: string;
+    signal: AbortSignal;
+    redirect?: "follow" | "error";
+}
+
+async function fetchSafe(url: string, init: FetchSafeInit): Promise<Response> {
 	let parsed = await validateUrl(url);
 	let remaining = 5;
 	const originalOrigin = parsed.origin;
 	while (true) {
-		const hdrs = parsed.origin === originalOrigin ? { ...headers } : stripSensitiveHeaders(headers);
-		const res = await nodeFetch(parsed, hdrs, signal);
+		const hdrs = parsed.origin === originalOrigin ? { ...init.headers } : stripSensitiveHeaders(init.headers);
+		const res = await nodeFetch(parsed, { method: init.method, headers: hdrs, body: init.body, signal: init.signal });
 		if (res.status >= 300 && res.status < 400 && res.status !== 304 && res.headers.has("location")) {
+			if (init.redirect === "error") {
+				throw new Error("unexpected redirect to " + res.headers.get("location")!);
+			}
 			if (--remaining < 0) throw new Error("too many redirects");
 			const loc = new URL(res.headers.get("location")!, parsed.href);
 			parsed = await validateUrl(loc.href);
@@ -332,7 +401,40 @@ function decodeEntities(s: string): string {
 		.replace(/&#x([0-9a-f]+);/gi, (_, n) => { const cp = parseInt(n, 16); return cp >= 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : _; })
 		.replace(/&[a-z]+;/gi, (m) => ENTITIES[m.toLowerCase()] ?? m);
 }
-function htmlToText(html: string): string {
+let _turndownService: any | null = null;
+
+async function getTurndown(): Promise<any | null> {
+	if (_turndownService) return _turndownService;
+	try {
+		const mod = await import("turndown");
+		_turndownService = new mod.default({ headingStyle: "atx", codeBlockStyle: "fenced" });
+		return _turndownService;
+	} catch {
+		return null;
+	}
+}
+
+async function htmlToMarkdown(html: string): Promise<string> {
+	try {
+		const td = await getTurndown();
+		if (td) {
+			let s = html;
+			s = s.replace(/<!--[\s\S]*?-->/g, "");
+			const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(s)?.[1]?.trim();
+			const md = td.turndown(s);
+			return title ? `# ${decodeEntities(title)}\n\n${md}` : md;
+		}
+	} catch {
+		// fall through
+	}
+	return htmlToTextFallback(html);
+}
+
+function stripTags(s: string): string {
+	return decodeEntities(s.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+}
+
+function htmlToTextFallback(html: string): string {
 	let s = html;
 	s = s.replace(/<!--[\s\S]*?-->/g, "");
 	// Pull a title for context (after comment-strip so commented-out titles don't win).
@@ -401,7 +503,7 @@ interface SearchResult {
 }
 
 async function searchExa(key: string, query: string, n: number, signal: AbortSignal): Promise<SearchResult> {
-	const res = await fetch("https://api.exa.ai/search", {
+	const res = await fetchSafe("https://api.exa.ai/search", {
 		method: "POST",
 		headers: { "content-type": "application/json", "x-api-key": key, "user-agent": UA },
 		body: JSON.stringify({ query, numResults: n, contents: { text: { maxCharacters: 500 } } }),
@@ -418,7 +520,7 @@ async function searchExa(key: string, query: string, n: number, signal: AbortSig
 }
 
 async function searchPerplexity(key: string, query: string, model: string, signal: AbortSignal): Promise<SearchResult> {
-	const res = await fetch("https://api.perplexity.ai/chat/completions", {
+	const res = await fetchSafe("https://api.perplexity.ai/chat/completions", {
 		method: "POST",
 		headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "user-agent": UA },
 		body: JSON.stringify({
@@ -438,7 +540,7 @@ async function searchPerplexity(key: string, query: string, model: string, signa
 
 async function searchBrave(key: string, query: string, n: number, signal: AbortSignal): Promise<SearchResult> {
 	const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
-	const res = await fetch(url, { headers: { accept: "application/json", "x-subscription-token": key, "user-agent": UA }, signal, redirect: "error" });
+	const res = await fetchSafe(url, { headers: { accept: "application/json", "x-subscription-token": key, "user-agent": UA }, signal, redirect: "error" });
 	if (!res.ok) throw new Error(`brave ${res.status}`);
 	const body = await readCapped(res);
 	const data: any = JSON.parse(body);
@@ -450,7 +552,7 @@ async function searchBrave(key: string, query: string, n: number, signal: AbortS
 
 async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): Promise<SearchResult> {
 	const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-	const res = await fetch(url, { headers: { "user-agent": UA }, signal, redirect: "error" });
+	const res = await fetchSafe(url, { headers: { "user-agent": UA }, signal, redirect: "error" });
 	if (!res.ok) throw new Error(`duckduckgo ${res.status}`);
 	const body = await readCapped(res);
 	const html = body;
@@ -466,7 +568,7 @@ async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): 
 		} catch {
 			continue; // malformed percent-encoding, skip this hit
 		}
-		const title = htmlToText(m[2]).trim();
+		const title = stripTags(m[2]);
 		if (href.startsWith("http")) hits.push({ title, url: href });
 	}
 	// Snippets
@@ -474,7 +576,7 @@ async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): 
 	let i = 0;
 	let s: RegExpExecArray | null;
 	while ((s = snipRe.exec(html)) && i < hits.length) {
-		hits[i].snippet = htmlToText(s[1]).trim();
+		hits[i].snippet = stripTags(s[1]);
 		i++;
 	}
 	// If DDG's HTML structure changed and no results were parsed, throw so
@@ -627,7 +729,7 @@ export function setupWeb(pi: ExtensionAPI) {
 			const omitted = urls.length > MAX_ENTRIES ? urls.length - MAX_ENTRIES : 0;
 			urls = urls.slice(0, MAX_ENTRIES).map((u) => u.slice(0, MAX_STR_LEN));
 			if (!urls.length) return { content: [{ type: "text", text: "Error: url or urls required" }], details: { urls: [] }, isError: true };
-			const textTypes = ["text/", "application/json", "application/xml", "application/xhtml+xml", "application/javascript", "application/ld+json"];
+
 			const blocks: string[] = [];
 			let allFailed = true;
 			for (const url of urls) {
@@ -635,17 +737,15 @@ export function setupWeb(pi: ExtensionAPI) {
 					const text = await withTimeout(
 						FETCH_TIMEOUT,
 						async (s) => {
-							const res = await fetchSafe(url, { "user-agent": UA, accept: "text/html,application/json,text/plain,*/*" }, s);
+							const res = await fetchSafe(url, { headers: { "user-agent": UA, accept: "text/html,application/json,text/plain,*/*" }, signal: s });
 							if (!res.ok) throw new Error(`HTTP ${res.status}`);
 							const ct = res.headers.get("content-type") ?? "";
 							const type = mediaType(ct);
 							const body = await readCapped(res);
 							if (!type) {
-								if (!looksTextLike(body)) throw new Error("Content-type header is absent and body does not appear to be text. Only text-like content (html, text, markdown, json, xml, xhtml, csv) is allowed.");
-							} else if (!textTypes.some(t => type.startsWith(t))) {
-								throw new Error(`Unsupported content-type: ${ct}. Only text-like content (html, text, markdown, json, xml, xhtml, csv, js) is allowed.`);
+								if (!looksTextLike(body)) throw new Error("Content-type header is absent and body does not appear to be text.");
 							}
-							if (type === "text/html" || type === "application/xhtml+xml") return htmlToText(body);
+							if (type === "text/html" || type === "application/xhtml+xml") return await htmlToMarkdown(body);
 							return body; // json / text / markdown
 						},
 						signal,
