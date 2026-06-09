@@ -64,7 +64,7 @@ async function validateUrl(urlStr: string): Promise<URL> {
 	}
 	const host = normalizeHost(parsed.hostname);
 
-	if (host === "localhost" || host === "metadata.google.internal") {
+	if (host === "localhost" || host.endsWith(".localhost") || host === "metadata.google.internal") {
 		throw new Error(`URL targets forbidden host: ${host}`);
 	}
 	if (host.endsWith(".internal") || host.endsWith(".local")) {
@@ -131,7 +131,7 @@ function ipv4FromMappedIPv6(ip: string): string | undefined {
  */
 function createLookup(hostname: string) {
 	const safeHostname = normalizeHost(hostname);
-	return (_host: string, _opts: unknown, cb: (err: Error | null, address?: string, family?: number) => void) => {
+	return (_host: string, opts: unknown, cb: (err: Error | null, address?: string, family?: number) => void) => {
 		// IP literal — validate directly without DNS
 		if (net.isIPv4(safeHostname)) {
 			try { unsafeIPv4(safeHostname); } catch (e) { return cb(e as Error); }
@@ -142,12 +142,21 @@ function createLookup(hostname: string) {
 			return cb(null, safeHostname, 6);
 		}
 		// Resolve hostname and validate every address
-		dns.lookup(safeHostname, { all: true, verbatim: true }, (err, addresses) => {
+		const familyHint = (opts as { family?: number })?.family ?? 0;
+		const lookupOptions: dns.LookupOptions = familyHint === 4 || familyHint === 6
+			? { family: familyHint }
+			: { all: true, verbatim: true };
+		const dnsTimeout = setTimeout(() => {
+			cb(new Error(`DNS lookup timed out for ${safeHostname}`));
+		}, 10_000);
+		dns.lookup(safeHostname, lookupOptions, (err, addresses) => {
+			clearTimeout(dnsTimeout);
 			if (err) return cb(err);
-			if (!Array.isArray(addresses) || addresses.length === 0) {
+			const entries = Array.isArray(addresses) ? addresses : [addresses];
+			if (entries.length === 0) {
 				return cb(new Error(`DNS lookup returned no addresses for ${safeHostname}`));
 			}
-			for (const a of addresses) {
+			for (const a of entries) {
 				try {
 					if (net.isIPv4(a.address)) unsafeIPv4(a.address);
 					else if (net.isIPv6(a.address)) unsafeIPv6(a.address);
@@ -156,7 +165,7 @@ function createLookup(hostname: string) {
 				}
 			}
 			// Return the first valid address — the connection is pinned to this IP
-			const first = addresses[0];
+			const first = entries[0];
 			cb(null, first.address, first.family);
 		});
 	};
@@ -290,6 +299,32 @@ const ENTITIES: Record<string, string> = {
 	"&mdash;": "—",
 	"&ndash;": "–",
 	"&hellip;": "…",
+	"&copy;": "©",
+	"&reg;": "®",
+	"&trade;": "™",
+	"&euro;": "€",
+	"&cent;": "¢",
+	"&pound;": "£",
+	"&yen;": "¥",
+	"&sect;": "§",
+	"&para;": "¶",
+	"&bull;": "•",
+	"&middot;": "·",
+	"&lsquo;": "'",
+	"&rsquo;": "'",
+	"&ldquo;": "\u201c",
+	"&rdquo;": "\u201d",
+	"&laquo;": "«",
+	"&raquo;": "»",
+	"&deg;": "°",
+	"&plusmn;": "±",
+	"&sup2;": "²",
+	"&sup3;": "³",
+	"&frac14;": "¼",
+	"&frac12;": "½",
+	"&frac34;": "¾",
+	"&times;": "×",
+	"&divide;": "÷",
 };
 function decodeEntities(s: string): string {
 	return s
@@ -592,7 +627,7 @@ export function setupWeb(pi: ExtensionAPI) {
 			const omitted = urls.length > MAX_ENTRIES ? urls.length - MAX_ENTRIES : 0;
 			urls = urls.slice(0, MAX_ENTRIES).map((u) => u.slice(0, MAX_STR_LEN));
 			if (!urls.length) return { content: [{ type: "text", text: "Error: url or urls required" }], details: { urls: [] }, isError: true };
-			const textTypes = ["text/html", "text/plain", "text/markdown", "application/json", "text/xml", "application/xml", "text/csv", "application/xhtml+xml"];
+			const textTypes = ["text/", "application/json", "application/xml", "application/xhtml+xml", "application/javascript", "application/ld+json"];
 			const blocks: string[] = [];
 			let allFailed = true;
 			for (const url of urls) {
@@ -607,8 +642,8 @@ export function setupWeb(pi: ExtensionAPI) {
 							const body = await readCapped(res);
 							if (!type) {
 								if (!looksTextLike(body)) throw new Error("Content-type header is absent and body does not appear to be text. Only text-like content (html, text, markdown, json, xml, xhtml, csv) is allowed.");
-							} else if (!textTypes.includes(type)) {
-								throw new Error(`Unsupported content-type: ${ct}. Only text-like content (html, text, markdown, json, xml, xhtml, csv) is allowed.`);
+							} else if (!textTypes.some(t => type.startsWith(t))) {
+								throw new Error(`Unsupported content-type: ${ct}. Only text-like content (html, text, markdown, json, xml, xhtml, csv, js) is allowed.`);
 							}
 							if (type === "text/html" || type === "application/xhtml+xml") return htmlToText(body);
 							return body; // json / text / markdown
