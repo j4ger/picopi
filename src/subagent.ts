@@ -309,25 +309,26 @@ function updateStatusPanel(context?: any) {
 				if (counts.failed) parts.push(theme.fg("error", `✗${counts.failed}`));
 				if (counts.done) parts.push(theme.fg("success", `✓${counts.done}`));
 
-				let line = theme.fg("dim", " subagents ") + parts.join(" ");
+				let line = theme.fg("muted", "▸ subagents") + "  " + parts.join(" ");
 
 				// Top running agent with elapsed and progress
 				const running = all.filter(s => s.status === "running");
 				if (running.length > 0) {
 					const top = running.reduce((a, b) => a.startTime < b.startTime ? a : b);
 					const elapsed = formatDuration(Date.now() - top.startTime);
-					line += theme.fg("dim", "  ·  ") + theme.fg("warning", truncateToWidth(top.agent, 14, "")) + theme.fg("dim", ` ${elapsed}`);
+					line += theme.fg("dim", "  ·  ") + theme.fg("warning", truncateToWidth(top.agent, 12, "")) + theme.fg("dim", ` ${elapsed}`);
 					if (top.progress || top.currentTool) {
-						line += theme.fg("dim", ` (${truncateToWidth(top.progress || top.currentTool!, 18, "…")})`);
+						line += theme.fg("dim", ` (${truncateToWidth(top.progress || top.currentTool!, 16, "…")})`);
 					}
 				}
 
-				line += theme.fg("dim", "  ·  [alt+s] [/subagents]");
+				line += theme.fg("dim", "  ·  ") + theme.fg("dim", "[alt+s]");
 				return [clip(line)];
 			}
 
 			// Expanded: compact list of active subagents, capped to ~12 lines
 			const lines: string[] = [];
+			lines.push(theme.fg("accent", "▾ Subagents") + "  " + theme.fg("dim", "[alt+s] fold · [/subagents]"));
 
 			const sorted = [
 				...all.filter(s => s.status === "stuck"),
@@ -344,24 +345,22 @@ function updateStatusPanel(context?: any) {
 				const icon = STATUS_ICON[sub.status] ?? "◌";
 				const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
 				const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
-				const label = `${icon} ${truncateToWidth(sub.agent, 14, "")} ${elapsed}`;
 
 				if (sub.status === "stuck") {
-					lines.push(theme.fg(color, label) + theme.fg("warning", " timeout"));
+					lines.push(theme.fg("dim", "  ") + theme.fg(color, `${icon} ${truncateToWidth(sub.agent, 12, "")}  ${elapsed}`) + theme.fg("warning", " timeout"));
 				} else if (sub.status === "failed") {
-					lines.push(theme.fg(color, label) + theme.fg("error", " failed"));
-				} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
-					lines.push(theme.fg(color, label) + theme.fg("dim", `  ${truncateToWidth(sub.progress || sub.currentTool!, 22, "…")}`));
+					lines.push(theme.fg("dim", "  ") + theme.fg(color, `${icon} ${truncateToWidth(sub.agent, 12, "")}  ${elapsed}`) + theme.fg("error", " failed"));
+				} else if (sub.status === "running") {
+					const progress = truncateToWidth(sub.progress || sub.currentTool || "thinking…", 20, "…");
+					lines.push(theme.fg("dim", "  ") + theme.fg(color, `${icon} ${truncateToWidth(sub.agent, 12, "")}  ${elapsed}`) + theme.fg("dim", `  ${progress}`));
 				} else {
-					lines.push(theme.fg(color, label));
+					lines.push(theme.fg("dim", "  ") + theme.fg(color, `${icon} ${truncateToWidth(sub.agent, 12, "")}  ${elapsed}`));
 				}
 			}
 
 			if (remaining > 0) {
-				lines.push(theme.fg("dim", ` +${remaining} more`));
+				lines.push(theme.fg("dim", "  +" + remaining + " more"));
 			}
-
-			lines.push(theme.fg("dim", " [alt+s] fold · [/subagents] inspect"));
 
 			return lines.map(clip);
 		},
