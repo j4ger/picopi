@@ -276,10 +276,17 @@ const MAX_DISPLAY_SUBAGENTS = 4;
 const MAX_RUNNING_IN_STATS = 3;
 // Status symbols: running=◌ done=✓ stuck=⚠ failed=✗
 const STATUS_ICON: Record<string, string> = { running: "◌", done: "✓", stuck: "⚠", failed: "✗" };
+let inspectorOpen = false;
 
 function updateStatusPanel(context?: any) {
 	if (context) extensionCtx = context;
 	if (!extensionCtx) return;
+
+	if (inspectorOpen) {
+		statusHandle?.hide();
+		statusHandle = null;
+		return;
+	}
 
 	if (activeSubagents.size === 0) {
 		statusHandle?.hide();
@@ -1045,6 +1052,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 				return;
 			}
 			rebuildResults(ctx);
+			inspectorOpen = true;
+			statusHandle?.hide();
+			statusHandle = null;
 			// Continue into the inspector even when empty — it shows guidance
 			// Combined live + history inspector. Selection is keyed by a stable `key`
 			// (the subagent id) so an agent finishing mid-view doesn't shift the
@@ -1105,7 +1115,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 				return [...running.map(fromStatus), ...completedActive.map(fromStatus), ...histCompleted.map(fromHist)];
 			};
 
-			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+			try {
+				await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 				let selectedKey: string | null = null;
 				let lastIndex = 0;
 				let initialized = false;
@@ -1237,14 +1248,12 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const model = cur.model ? theme.fg("dim", ` ${cur.model}`) : "";
 							const status = cur.running ? theme.fg("warning", cur.stuck ? " · stuck" : " · running") : cur.ok ? theme.fg("dim", " · done") : theme.fg("error", " · failed");
 							out.push(row(`${glyph(cur)} ${theme.fg("accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${status}`));
-							for (const w of wrapTextWithAnsi(`  ${cur.subLabel}`, Math.max(1, innerW))) {
-								out.push(row(theme.fg("dim", w)));
-							}
-							if (cur.reason) {
-								for (const w of wrapTextWithAnsi(`  Reason: ${cur.reason}`, Math.max(1, innerW))) {
-									out.push(row(theme.fg("dim", w)));
-								}
-							}
+							const detailRows = [
+								...wrapTextWithAnsi(`  ${cur.subLabel}`, Math.max(1, innerW)).slice(0, 2),
+								...(cur.reason ? wrapTextWithAnsi(`  Reason: ${cur.reason}`, Math.max(1, innerW)).slice(0, 2) : []),
+							];
+							for (const detail of detailRows.slice(0, 4)) out.push(row(theme.fg("dim", detail)));
+							while (out.length < 6) out.push(row(""));
 							out.push(border("├" + hr + "┤"));
 							const lines = transcriptLines(cur, innerW);
 							const maxOffset = Math.max(0, lines.length - viewportH);
@@ -1253,6 +1262,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							scrollOffset = Math.min(Math.max(scrollOffset, 0), maxOffset);
 							const slice = lines.slice(scrollOffset, scrollOffset + viewportH);
 							for (const l of slice) out.push(row(l));
+							for (let i = slice.length; i < viewportH; i++) out.push(row(""));
 							out.push(border("└" + hr + "┘"));
 							const more: string[] = [];
 							if (scrollOffset > 0) more.push("↑ more");
@@ -1284,8 +1294,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const model = it.model ? theme.fg("dim", ` ${it.model}`) : "";
 							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
 							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i });
-							listRows.push({ line: theme.fg("dim", `    ${it.subLabel}`), itemIdx: i });
-							if (sel && it.reason) listRows.push({ line: theme.fg("dim", `    reason: ${outputPreview(it.reason, 100)}`), itemIdx: i });
+							const subLabel = sel && it.reason ? `${it.subLabel} · reason: ${outputPreview(it.reason, 80)}` : it.subLabel;
+							listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i });
 						}
 						let winStart = 0;
 						if (listRows.length > viewportH) {
@@ -1297,10 +1307,12 @@ export function setupSubagent(pi: ExtensionAPI) {
 							winStart--;
 						}
 						let winEnd = Math.min(winStart + viewportH, listRows.length);
-						while (winEnd < listRows.length && listRows[winEnd - 1].itemIdx !== null && listRows[winEnd].itemIdx === listRows[winEnd - 1].itemIdx) {
-							winEnd++;
+						while (winEnd > winStart && winEnd < listRows.length && listRows[winEnd - 1].itemIdx !== null && listRows[winEnd].itemIdx === listRows[winEnd - 1].itemIdx) {
+							winEnd--;
 						}
-						for (const r of listRows.slice(winStart, winEnd)) out.push(row(r.line));
+						const visibleRows = listRows.slice(winStart, winEnd).slice(0, viewportH);
+						for (const r of visibleRows) out.push(row(r.line));
+						for (let i = visibleRows.length; i < viewportH; i++) out.push(row(""));
 						out.push(border("└" + hr + "┘"));
 						const listMore: string[] = [];
 						if (winStart > 0) listMore.push("↑ more");
@@ -1366,8 +1378,12 @@ export function setupSubagent(pi: ExtensionAPI) {
 					margin: 1,
 					maxHeight: "90%",
 				},
+				}
+				);
+			} finally {
+				inspectorOpen = false;
+				updateStatusPanel(ctx);
 			}
-			);
 		},
 	});
 }
