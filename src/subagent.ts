@@ -1204,6 +1204,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							out.push(row(theme.fg("dim", "  Delegated subagent runs will appear here")));
 							out.push(row(theme.fg("dim", "  when you use the subagent tool.")));
 							out.push(row(theme.fg("dim", "  Results are scoped to the current branch.")));
+							for (let i = 0; i < viewportH; i++) out.push(row(""));
 							out.push(border("└" + hr + "┘"));
 							out.push(truncateToWidth(theme.fg("dim", "  q quit"), width));
 							return out;
@@ -1241,6 +1242,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const slice = lines.slice(scrollOffset, scrollOffset + viewportH);
 							for (const l of slice) out.push(row(l));
 							for (let i = slice.length; i < viewportH; i++) out.push(row(""));
+							for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
 							out.push(border("└" + hr + "┘"));
 							const more: string[] = [];
 							if (scrollOffset > 0) more.push("↑ more");
@@ -1291,6 +1293,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						const visibleRows = listRows.slice(winStart, winEnd).slice(0, viewportH);
 						for (const r of visibleRows) out.push(row(r.line));
 						for (let i = visibleRows.length; i < viewportH; i++) out.push(row(""));
+						for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
 						out.push(border("└" + hr + "┘"));
 						const listMore: string[] = [];
 						if (winStart > 0) listMore.push("↑ more");
