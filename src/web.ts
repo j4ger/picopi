@@ -22,6 +22,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig } from "./config.ts";
+import dns from "node:dns";
+import http from "node:http";
+import https from "node:https";
+import net from "node:net";
 
 const UA = "picopi/0.1 (+https://github.com/; pi coding agent)";
 const FETCH_CAP = 30_000;
@@ -50,43 +54,205 @@ async function readCapped(res: Response): Promise<string> {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-function assertSafeUrl(urlStr: string): URL {
+async function validateUrl(urlStr: string): Promise<URL> {
 	const parsed = new URL(urlStr);
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
 		throw new Error(`URL protocol must be http or https, got ${parsed.protocol}`);
 	}
-	const host = parsed.hostname.toLowerCase();
-	if (host === "localhost") throw new Error("URL targets localhost (loopback)");
-	if (host.endsWith(".internal") || host.endsWith(".local"))
+	if (parsed.username || parsed.password) {
+		throw new Error("URL must not contain userinfo");
+	}
+	const host = normalizeHost(parsed.hostname);
+
+	if (host === "localhost" || host === "metadata.google.internal") {
+		throw new Error(`URL targets forbidden host: ${host}`);
+	}
+	if (host.endsWith(".internal") || host.endsWith(".local")) {
 		throw new Error(`URL targets internal/local hostname: ${host}`);
-	const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-	if (ipv4) {
-		const a = Number(ipv4[1]), b = Number(ipv4[2]), c = Number(ipv4[3]), d = Number(ipv4[4]);
-		if (a === 127) throw new Error("URL targets loopback (127.0.0.0/8)");
-		if (a === 10) throw new Error("URL targets private network (10.0.0.0/8)");
-		if (a === 169 && b === 254) throw new Error("URL targets link-local (169.254.0.0/16)");
-		if (a === 192 && b === 168) throw new Error("URL targets private network (192.168.0.0/16)");
-		if (a === 172 && b >= 16 && b <= 31) throw new Error("URL targets private network (172.16.0.0/12)");
 	}
-	if (host.includes(":")) {
-		const ipv6 = host.replace(/%[a-z0-9]+$/i, "").toLowerCase();
-		if (ipv6 === "::1" || ipv6 === "0:0:0:0:0:0:0:1") throw new Error("URL targets loopback (::1)");
-		if (ipv6.startsWith("fc") || ipv6.startsWith("fd")) throw new Error("URL targets unique-local (fc00::/7)");
-		if (ipv6.startsWith("fe80")) throw new Error("URL targets link-local (fe80::/10)");
-	}
+
+	// IP literal check — DNS + IP validation happens inside the custom lookup
+	// callback during the actual TCP connection, which prevents DNS rebinding.
+	if (net.isIPv4(host)) unsafeIPv4(host);
+	else if (net.isIPv6(host)) unsafeIPv6(host);
+
 	return parsed;
 }
 
+function normalizeHost(hostname: string): string {
+	return hostname
+		.toLowerCase()
+		.replace(/\.$/, "")
+		.replace(/^\[(.+)\]$/, "$1")
+		.replace(/%[a-z0-9]+$/i, "");
+}
+
+function unsafeIPv4(ip: string): void {
+	const p = ip.split(".").map(Number);
+	if (p.length !== 4 || p.some((x) => !Number.isInteger(x) || x < 0 || x > 255)) throw new Error(`URL resolves to invalid IPv4 address: ${ip}`);
+	const [a, b] = p;
+	if (a === 0) throw new Error(`URL resolves to forbidden address (0.0.0.0/8): ${ip}`);
+	if (a === 10) throw new Error(`URL resolves to private address (10.0.0.0/8): ${ip}`);
+	if (a === 100 && b >= 64 && b <= 127) throw new Error(`URL resolves to CGNAT address (100.64.0.0/10): ${ip}`);
+	if (a === 127) throw new Error(`URL resolves to loopback address (127.0.0.0/8): ${ip}`);
+	if (a === 169 && b === 254) throw new Error(`URL resolves to link-local address (169.254.0.0/16): ${ip}`);
+	if (a === 172 && b >= 16 && b <= 31) throw new Error(`URL resolves to private address (172.16.0.0/12): ${ip}`);
+	if (a === 192 && b === 168) throw new Error(`URL resolves to private address (192.168.0.0/16): ${ip}`);
+	if (a >= 224) throw new Error(`URL resolves to multicast/reserved address: ${ip}`);
+}
+
+function unsafeIPv6(ip: string): void {
+	const n = ip.toLowerCase().replace(/%[a-z0-9]+$/i, "");
+	if (n === "::" || n === "0:0:0:0:0:0:0:0") throw new Error(`URL resolves to unspecified address (::): ${ip}`);
+	if (n === "::1" || n === "0:0:0:0:0:0:0:1") throw new Error(`URL resolves to loopback address (::1): ${ip}`);
+	const first = parseInt(n.split(":")[0] || "0", 16);
+	if ((first & 0xfe00) === 0xfc00) throw new Error(`URL resolves to unique-local address (fc00::/7): ${ip}`);
+	if ((first & 0xffc0) === 0xfe80) throw new Error(`URL resolves to link-local address (fe80::/10): ${ip}`);
+	if ((first & 0xff00) === 0xff00) throw new Error(`URL resolves to multicast address (ff00::/8): ${ip}`);
+	const mapped = ipv4FromMappedIPv6(n);
+	if (mapped) unsafeIPv4(mapped);
+}
+
+function ipv4FromMappedIPv6(ip: string): string | undefined {
+	const dotted = /^::ffff:(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip);
+	if (dotted) return `${dotted[1]}.${dotted[2]}.${dotted[3]}.${dotted[4]}`;
+	const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
+	if (!hex) return undefined;
+	const hi = parseInt(hex[1], 16);
+	const lo = parseInt(hex[2], 16);
+	return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
+/**
+ * Custom DNS lookup for Node http/https requests that validates every resolved
+ * address against the unsafe-IP rules at connect time.  This prevents DNS
+ * rebinding: between the hostname check and the actual TCP connection, the
+ * address we connect to is guaranteed safe.
+ */
+function createLookup(hostname: string) {
+	const safeHostname = normalizeHost(hostname);
+	return (_host: string, _opts: unknown, cb: (err: Error | null, address?: string, family?: number) => void) => {
+		// IP literal — validate directly without DNS
+		if (net.isIPv4(safeHostname)) {
+			try { unsafeIPv4(safeHostname); } catch (e) { return cb(e as Error); }
+			return cb(null, safeHostname, 4);
+		}
+		if (net.isIPv6(safeHostname)) {
+			try { unsafeIPv6(safeHostname); } catch (e) { return cb(e as Error); }
+			return cb(null, safeHostname, 6);
+		}
+		// Resolve hostname and validate every address
+		dns.lookup(safeHostname, { all: true, verbatim: true }, (err, addresses) => {
+			if (err) return cb(err);
+			if (!Array.isArray(addresses) || addresses.length === 0) {
+				return cb(new Error(`DNS lookup returned no addresses for ${safeHostname}`));
+			}
+			for (const a of addresses) {
+				try {
+					if (net.isIPv4(a.address)) unsafeIPv4(a.address);
+					else if (net.isIPv6(a.address)) unsafeIPv6(a.address);
+				} catch (e) {
+					return cb(e as Error);
+				}
+			}
+			// Return the first valid address — the connection is pinned to this IP
+			const first = addresses[0];
+			cb(null, first.address, first.family);
+		});
+	};
+}
+
+/** Replacement for global fetch that uses Node's http/https modules with a
+ *  custom lookup that validates IPs at connection time.  Returns a standard
+ *  Response object so callers (including fetchSafe) work unchanged. */
+function nodeFetch(targetUrl: URL, headers: Record<string, string>, signal: AbortSignal): Promise<Response> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) {
+			reject(new DOMException("The operation was aborted", "AbortError"));
+			return;
+		}
+
+		const isHttps = targetUrl.protocol === "https:";
+		const mod = isHttps ? https : http;
+		const hostname = targetUrl.hostname;
+		const port = targetUrl.port ? parseInt(targetUrl.port, 10) : (isHttps ? 443 : 80);
+
+		const options: http.RequestOptions = {
+			hostname,
+			port,
+			path: targetUrl.pathname + targetUrl.search,
+			method: "GET",
+			headers,
+			lookup: createLookup(hostname),
+		};
+
+		let settled = false;
+		const settleOnce = (err: unknown) => {
+			if (settled) return;
+			settled = true;
+			reject(err);
+		};
+
+		const req = mod.request(options, (res) => {
+			const chunks: Buffer[] = [];
+			let total = 0;
+			let capped = false;
+
+			res.on("data", (chunk: Buffer) => {
+				if (capped) return;
+				total += chunk.length;
+				if (total > MAX_DOWNLOAD) {
+					capped = true;
+					req.destroy(new Error("response exceeded size limit"));
+					return;
+				}
+				chunks.push(chunk);
+			});
+
+			res.on("end", () => {
+				if (capped || settled) return;
+				settled = true;
+				const body = Buffer.concat(chunks).toString("utf8");
+				const hdrs = new Headers();
+				for (const [k, v] of Object.entries(res.headers)) {
+					if (v !== undefined) {
+						const values = Array.isArray(v) ? v : [v];
+						for (const val of values) {
+							if (val !== null) hdrs.append(k, String(val));
+						}
+					}
+				}
+				const status = res.statusCode ?? 200;
+				resolve(new Response([204, 205, 304].includes(status) ? null : body, {
+					status,
+					statusText: res.statusMessage ?? "",
+					headers: hdrs,
+				}));
+			});
+		});
+
+		req.on("error", (err) => settleOnce(err));
+
+		signal.addEventListener("abort", () => {
+			req.destroy();
+			settleOnce(new DOMException("The operation was aborted", "AbortError"));
+		}, { once: true });
+
+		req.end();
+	});
+}
+
 async function fetchSafe(url: string, headers: Record<string, string>, signal: AbortSignal): Promise<Response> {
-	let parsed = assertSafeUrl(url);
+	let parsed = await validateUrl(url);
 	let remaining = 5;
+	const originalOrigin = parsed.origin;
 	while (true) {
-		const res = await fetch(parsed.href, { headers, signal, redirect: "manual" });
+		const hdrs = parsed.origin === originalOrigin ? { ...headers } : stripSensitiveHeaders(headers);
+		const res = await nodeFetch(parsed, hdrs, signal);
 		if (res.status >= 300 && res.status < 400 && res.status !== 304 && res.headers.has("location")) {
 			if (--remaining < 0) throw new Error("too many redirects");
 			const loc = new URL(res.headers.get("location")!, parsed.href);
-			assertSafeUrl(loc.href);
-			parsed = loc;
+			parsed = await validateUrl(loc.href);
 			continue;
 		}
 		return res;
@@ -100,6 +266,7 @@ function envKey(name: string): string | undefined {
 
 async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>, outer?: AbortSignal): Promise<T> {
 	const ctrl = new AbortController();
+	if (outer?.aborted) ctrl.abort();
 	const t = setTimeout(() => ctrl.abort(), ms);
 	const onAbort = () => ctrl.abort();
 	outer?.addEventListener("abort", onAbort, { once: true });
@@ -151,6 +318,41 @@ function cap(text: string): string {
 	return `${text.slice(0, FETCH_CAP)}\n\n[truncated: ${text.length - FETCH_CAP} more chars]`;
 }
 
+/** Quick heuristic: check if a string looks like text (no null bytes, few
+ *  non-printable chars). Used when content-type header is absent. */
+function looksTextLike(s: string): boolean {
+	if (s.includes("\0")) return false;
+	let nonPrintable = 0;
+	const limit = Math.min(s.length, 2000);
+	for (let i = 0; i < limit; i++) {
+		const code = s.charCodeAt(i);
+		if (code < 32 && code !== 9 && code !== 10 && code !== 13) nonPrintable++;
+	}
+	return nonPrintable < 10;
+}
+
+function escapeAttr(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escapeBlock(s: string): string {
+	return s.replace(/<\s*\/\s*(web_search|web_content)\s*>/gi, "&lt;/$1&gt;");
+}
+
+function mediaType(contentType: string): string {
+	return contentType.split(";")[0].trim().toLowerCase();
+}
+
+function stripSensitiveHeaders(headers: Record<string, string>): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) {
+		const lower = key.toLowerCase();
+		if (lower === "authorization" || lower === "cookie" || lower === "proxy-authorization" || lower === "x-api-key" || lower === "x-subscription-token") continue;
+		out[key] = value;
+	}
+	return out;
+}
+
 // --- search providers ---------------------------------------------------------
 interface SearchHit {
 	title: string;
@@ -169,6 +371,7 @@ async function searchExa(key: string, query: string, n: number, signal: AbortSig
 		headers: { "content-type": "application/json", "x-api-key": key, "user-agent": UA },
 		body: JSON.stringify({ query, numResults: n, contents: { text: { maxCharacters: 500 } } }),
 		signal,
+		redirect: "error",
 	});
 	if (!res.ok) throw new Error(`exa ${res.status}`);
 	const body = await readCapped(res);
@@ -188,6 +391,7 @@ async function searchPerplexity(key: string, query: string, model: string, signa
 			messages: [{ role: "user", content: query }],
 		}),
 		signal,
+		redirect: "error",
 	});
 	if (!res.ok) throw new Error(`perplexity ${res.status}`);
 	const body = await readCapped(res);
@@ -199,7 +403,7 @@ async function searchPerplexity(key: string, query: string, model: string, signa
 
 async function searchBrave(key: string, query: string, n: number, signal: AbortSignal): Promise<SearchResult> {
 	const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
-	const res = await fetch(url, { headers: { accept: "application/json", "x-subscription-token": key, "user-agent": UA }, signal });
+	const res = await fetch(url, { headers: { accept: "application/json", "x-subscription-token": key, "user-agent": UA }, signal, redirect: "error" });
 	if (!res.ok) throw new Error(`brave ${res.status}`);
 	const body = await readCapped(res);
 	const data: any = JSON.parse(body);
@@ -211,7 +415,7 @@ async function searchBrave(key: string, query: string, n: number, signal: AbortS
 
 async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): Promise<SearchResult> {
 	const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-	const res = await fetch(url, { headers: { "user-agent": UA }, signal });
+	const res = await fetch(url, { headers: { "user-agent": UA }, signal, redirect: "error" });
 	if (!res.ok) throw new Error(`duckduckgo ${res.status}`);
 	const body = await readCapped(res);
 	const html = body;
@@ -222,7 +426,11 @@ async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): 
 		let href = decodeEntities(m[1]);
 		// DDG wraps targets in /l/?uddg=<encoded>
 		const uddg = /[?&]uddg=([^&]+)/.exec(href);
-		if (uddg) href = decodeURIComponent(uddg[1]);
+		try {
+			if (uddg) href = decodeURIComponent(uddg[1]);
+		} catch {
+			continue; // malformed percent-encoding, skip this hit
+		}
 		const title = htmlToText(m[2]).trim();
 		if (href.startsWith("http")) hits.push({ title, url: href });
 	}
@@ -265,6 +473,8 @@ async function runSearch(query: string, n: number, requested: string | undefined
 			// requested a keyed provider but no key
 			throw new Error(`${p}: missing API key`);
 		} catch (e) {
+			// Treat AbortError/timeout as terminal — don't fall back to another provider
+			if ((e as Error)?.name === "AbortError") throw e;
 			lastErr = { provider: p, error: e };
 		}
 	}
@@ -275,17 +485,34 @@ async function runSearch(query: string, n: number, requested: string | undefined
 	throw new Error("no search provider available");
 }
 
+function escapeMd(text: string): string {
+	return text.replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+}
+
+function markdownLinkUrl(rawUrl: string): string | undefined {
+	try {
+		const parsed = new URL(rawUrl);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+		return `<${parsed.href.replace(/[<>\s\u0000-\u001f\u007f]/g, encodeURIComponent)}>`;
+	} catch {
+		return undefined;
+	}
+}
+
 function formatSearch(query: string, r: SearchResult): string {
-	const lines: string[] = [`# Search: ${query}  (via ${r.provider})`];
-	if (r.answer) lines.push("", r.answer);
+	const lines: string[] = [`<web_search provider="${escapeAttr(r.provider)}" query="${escapeAttr(query)}">`];
+	if (r.answer) lines.push("", cap(escapeBlock(r.answer)));
 	if (r.hits.length) {
 		lines.push("", "## Sources");
 		for (const h of r.hits) {
-			lines.push(`- [${h.title}](${h.url})`);
-			if (h.snippet) lines.push(`  ${h.snippet}`);
+			const url = markdownLinkUrl(h.url);
+			if (!url) continue;
+			lines.push(`- [${escapeMd(escapeBlock(h.title))}](${url})`);
+			if (h.snippet) lines.push(`  ${cap(escapeBlock(h.snippet))}`);
 		}
 	}
 	if (!r.answer && !r.hits.length) lines.push("", "(no results)");
+	lines.push("</web_search>");
 	return lines.join("\n");
 }
 
@@ -312,22 +539,31 @@ export function setupWeb(pi: ExtensionAPI) {
 		promptGuidelines: ["Use web_search for up-to-date facts; prefer several varied queries over one broad query."],
 		parameters: SearchParams,
 		async execute(_id, params, signal, _onUpdate, _ctx) {
-			const queries = params.queries?.length ? params.queries : params.query ? [params.query] : [];
+			const MAX_ENTRIES = 5;
+			const MAX_STR_LEN = 500;
+			let queries = params.queries?.length ? params.queries : params.query ? [params.query] : [];
+			const omitted = queries.length > MAX_ENTRIES ? queries.length - MAX_ENTRIES : 0;
+			queries = queries.slice(0, MAX_ENTRIES).map((q) => q.slice(0, MAX_STR_LEN));
 			if (!queries.length)
 				return { content: [{ type: "text", text: "Error: query or queries required" }], details: { results: [] }, isError: true };
 			const n = Math.min(Math.max(params.numResults ?? 5, 1), 15);
 			const blocks: string[] = [];
 			const details: SearchResult[] = [];
+			let allFailed = true;
 			for (const q of queries) {
 				try {
 					const r = await withTimeout(SEARCH_TIMEOUT, (s) => runSearch(q, n, params.provider, s), signal);
 					details.push(r);
 					blocks.push(formatSearch(q, r));
+					allFailed = false;
 				} catch (e) {
-					blocks.push(`# Search: ${q}\n\nError: ${e instanceof Error ? e.message : String(e)}`);
+					if ((e as Error)?.name === "AbortError") throw e;
+					blocks.push(`<web_search query="${escapeAttr(q)}">\nError: ${escapeBlock(e instanceof Error ? e.message : String(e))}\n</web_search>`);
 				}
 			}
-			return { content: [{ type: "text", text: cap(blocks.join("\n\n---\n\n")) }], details: { results: details } };
+			let text = blocks.join("\n\n---\n\n");
+			if (omitted > 0) text = `[${omitted} additional quer${omitted === 1 ? "y" : "ies"} omitted]\n\n` + text;
+			return { content: [{ type: "text", text }], details: { results: details }, isError: allFailed };
 		},
 		renderCall(args, theme) {
 			const q = args.queries?.length ? `${args.queries.length} queries` : args.query || "…";
@@ -350,9 +586,15 @@ export function setupWeb(pi: ExtensionAPI) {
 		promptGuidelines: ["Use fetch_content to read pages found via web_search before relying on snippets."],
 		parameters: FetchParams,
 		async execute(_id, params, signal, _onUpdate, _ctx) {
-			const urls = params.urls?.length ? params.urls : params.url ? [params.url] : [];
+			const MAX_ENTRIES = 5;
+			const MAX_STR_LEN = 2000;
+			let urls = params.urls?.length ? params.urls : params.url ? [params.url] : [];
+			const omitted = urls.length > MAX_ENTRIES ? urls.length - MAX_ENTRIES : 0;
+			urls = urls.slice(0, MAX_ENTRIES).map((u) => u.slice(0, MAX_STR_LEN));
 			if (!urls.length) return { content: [{ type: "text", text: "Error: url or urls required" }], details: { urls: [] }, isError: true };
+			const textTypes = ["text/html", "text/plain", "text/markdown", "application/json", "text/xml", "application/xml", "text/csv", "application/xhtml+xml"];
 			const blocks: string[] = [];
+			let allFailed = true;
 			for (const url of urls) {
 				try {
 					const text = await withTimeout(
@@ -361,18 +603,28 @@ export function setupWeb(pi: ExtensionAPI) {
 							const res = await fetchSafe(url, { "user-agent": UA, accept: "text/html,application/json,text/plain,*/*" }, s);
 							if (!res.ok) throw new Error(`HTTP ${res.status}`);
 							const ct = res.headers.get("content-type") ?? "";
+							const type = mediaType(ct);
 							const body = await readCapped(res);
-							if (ct.includes("html")) return htmlToText(body);
+							if (!type) {
+								if (!looksTextLike(body)) throw new Error("Content-type header is absent and body does not appear to be text. Only text-like content (html, text, markdown, json, xml, xhtml, csv) is allowed.");
+							} else if (!textTypes.includes(type)) {
+								throw new Error(`Unsupported content-type: ${ct}. Only text-like content (html, text, markdown, json, xml, xhtml, csv) is allowed.`);
+							}
+							if (type === "text/html" || type === "application/xhtml+xml") return htmlToText(body);
 							return body; // json / text / markdown
 						},
 						signal,
 					);
-					blocks.push(`# ${url}\n\n${text}`);
+					blocks.push(`<web_content url="${escapeAttr(url)}">\n${cap(escapeBlock(text))}\n</web_content>`);
+					allFailed = false;
 				} catch (e) {
-					blocks.push(`# ${url}\n\nError: ${e instanceof Error ? e.message : String(e)}`);
+					if ((e as Error)?.name === "AbortError") throw e;
+					blocks.push(`<web_content url="${escapeAttr(url)}">\nError: ${escapeBlock(e instanceof Error ? e.message : String(e))}\n</web_content>`);
 				}
 			}
-			return { content: [{ type: "text", text: cap(blocks.join("\n\n---\n\n")) }], details: { urls } };
+			let text = blocks.join("\n\n---\n\n");
+			if (omitted > 0) text = `[${omitted} additional URL${omitted === 1 ? "" : "s"} omitted]\n\n` + text;
+			return { content: [{ type: "text", text }], details: { urls }, isError: allFailed };
 		},
 		renderCall(args, theme) {
 			const u = args.urls?.length ? `${args.urls.length} urls` : args.url || "…";
