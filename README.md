@@ -106,16 +106,18 @@ Have planner create a plan, then fixer implements it
 
 **Inspector:** Run `/subagents` to open a live TUI panel that shows running and
 completed subagents. Navigate with arrow keys, press Enter to expand a
-subagent's transcript. The inspector has three verbosity levels (cycle with `v`):
+subagent's transcript, and press `q` to quit. The inspector has three verbosity
+levels (cycle with `v`):
 
 | Level | What's shown |
 |-------|-------------|
-| **minimal** (default) | Tool calls/results only, plus live streaming text with `▌` cursor |
-| **normal** | Adds last 2 lines of each assistant turn |
+| **minimal** | Tool calls/results only, plus live streaming text with `▌` cursor |
+| **normal** (default) | Adds a compact preview of each assistant turn |
 | **verbose** | Full assistant text for every turn |
 
 Running subagents show their current streaming output in real-time at the bottom
-of the expanded view.
+of the expanded view. Delegations may include an optional `reason`, which is
+shown in completion messages and the inspector.
 
 **Config:**
 

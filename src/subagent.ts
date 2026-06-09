@@ -5,8 +5,8 @@
  * Models/thinking from central config.json `agents` map.
  * Spawns isolated `pi` processes (JSON mode, no session).
  *
- * Modes: single {agent, task}, parallel {tasks: [{agent, task}]}
- * Features: status panel overlay, watchdog timer for stuck detection.
+ * Modes: single {agent, task, reason}, parallel {tasks: [{agent, task, reason}]}
+ * Features: status panel overlay, reason metadata, watchdog timer for stuck detection.
  */
 
 import { spawn } from "node:child_process";
@@ -28,6 +28,8 @@ const MAX_DEPTH = 2;
 const DEPTH_ENV = "PICOPI_SUBAGENT_DEPTH";
 const DEFAULT_TIMEOUT = 120; // seconds
 const WATCHDOG_INTERVAL = 5000; // ms
+const LONG_RUNNING_TOOL_TIMEOUT_MULTIPLIER = 2;
+const LONG_RUNNING_TOOLS = new Set(["bash", "subagent", "web_search"]);
 
 // Allowlist of env var prefixes to pass through to child processes.
 // Everything else is stripped to avoid leaking secrets (DB creds, cloud keys, etc.).
@@ -80,6 +82,7 @@ interface AgentDef {
 interface RunResult {
 	agent: string;
 	task: string;
+	reason?: string;
 	exitCode: number;
 	messages: Message[];
 	stderr: string;
@@ -103,6 +106,7 @@ interface SubagentStatus {
 	id: string;
 	agent: string;
 	task: string;
+	reason?: string;
 	status: "running" | "done" | "failed" | "stuck";
 	progress?: string;
 	currentTool?: string;
@@ -118,6 +122,7 @@ interface SubagentStatus {
 interface SubagentCompleteDetails {
 	agent: string;
 	task: string;
+	reason?: string;
 	ok: boolean;
 	model?: string;
 	durationMs: number;
@@ -129,6 +134,7 @@ interface SubagentResultEntry {
 	transcript?: TranscriptEntry[];
 	agent: string;
 	task: string;
+	reason?: string;
 	ok: boolean;
 	model?: string;
 	durationMs: number;
@@ -187,6 +193,7 @@ function persistResult(pi: ExtensionAPI, r: RunResult, durationMs: number, id: s
 		transcript: trimTranscriptForPersist(activeSubagents.get(id)?.transcript),
 		agent: r.agent,
 		task: r.task,
+		reason: r.reason,
 		ok: !failed(r),
 		model: r.model,
 		durationMs,
@@ -450,9 +457,9 @@ const summarizeResult = (tool?: string, result?: any): string => {
 	return String(result).slice(0, 60);
 };
 
-const trackAgent = (id: string, agent: string, task: string, timeout?: number) => {
+const trackAgent = (id: string, agent: string, task: string, timeout?: number, reason?: string) => {
 	const now = Date.now();
-	const sub: SubagentStatus = { id, agent, task, status: "running", startTime: now, lastActivity: now, timeout, transcript: [] };
+	const sub: SubagentStatus = { id, agent, task, reason, status: "running", startTime: now, lastActivity: now, timeout, transcript: [] };
 	activeSubagents.set(id, sub);
 	updateStatusPanel();
 };
@@ -541,11 +548,12 @@ async function runAgent(
 	signal: AbortSignal | undefined,
 	statusId: string,
 	timeout?: number,
+	reason?: string,
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === name);
 	if (!agent) {
 		trackComplete(statusId, false);
-		return { agent: name, task, exitCode: 1, messages: [], stderr: `Unknown agent "${name}". Available: ${agents.map((a) => `"${a.name}"`).join(", ") || "none"}.` };
+		return { agent: name, task, reason, exitCode: 1, messages: [], stderr: `Unknown agent "${name}". Available: ${agents.map((a) => `"${a.name}"`).join(", ") || "none"}.` };
 	}
 
 	const cfg = loadConfig();
@@ -597,10 +605,11 @@ async function runAgent(
 				trackProgress(statusId, `retrying with ${spec}`);
 			}
 
-			const base: RunResult = { agent: name, task, exitCode: 0, messages: [], stderr: "" };
+			const base: RunResult = { agent: name, task, reason, exitCode: 0, messages: [], stderr: "" };
 			let aborted = false;
 			let stuck = false;
 			let lastEventTime = Date.now();
+			let currentToolName: string | undefined;
 			let watchdogId: NodeJS.Timeout | null = null;
 
 			const code = await new Promise<number>((resolve) => {
@@ -630,7 +639,10 @@ async function runAgent(
 				// Per-process watchdog — only mark as stuck on the first
 				// attempt; retries show "retrying" via trackProgress above.
 				watchdogId = setInterval(() => {
-					if (Date.now() - lastEventTime > effectiveTimeout * 1000) {
+					const multiplier = currentToolName && LONG_RUNNING_TOOLS.has(currentToolName)
+						? LONG_RUNNING_TOOL_TIMEOUT_MULTIPLIER
+						: 1;
+					if (Date.now() - lastEventTime > effectiveTimeout * 1000 * multiplier) {
 						stuck = true;
 						if (attempt === 0) trackStuck(statusId);
 						killTree("SIGTERM");
@@ -647,11 +659,15 @@ async function runAgent(
 					lastEventTime = Date.now();
 
 					if (ev.type === "tool_execution_start") {
+						currentToolName = ev.toolName;
+						lastEventTime = Date.now();
 						trackProgress(statusId, undefined, ev.toolName);
 						pushTranscript(statusId, "tool-call", ev.toolName, { toolName: ev.toolName, args: ev.args });
 					}
 
 					if (ev.type === "tool_execution_end") {
+						currentToolName = undefined;
+						lastEventTime = Date.now();
 						pushTranscript(statusId, "tool-done", ev.toolName ?? "done", { toolName: ev.toolName, result: ev.result, isError: ev.isError });
 					}
 
@@ -700,17 +716,21 @@ async function runAgent(
 					for (const l of lines) onLine(l);
 				});
 				proc.stderr.on("data", (d) => { base.stderr += d.toString(); });
-				// Safety: resolve after 2× effective timeout to prevent hanging forever.
+				// Safety: resolve if the child remains silent well beyond the watchdog
+				// window. This is idle-based, so healthy output/events keep it alive.
 				let resolved = false;
 				const safeResolve = (code: number) => { if (!resolved) { resolved = true; resolve(code); } };
-				const hangTimer = setTimeout(() => {
+				const hangTimer = setInterval(() => {
+					if (Date.now() - lastEventTime <= effectiveTimeout * LONG_RUNNING_TOOL_TIMEOUT_MULTIPLIER * 2 * 1000) return;
+					stuck = true;
+					if (attempt === 0) trackStuck(statusId);
 					killTree("SIGTERM");
 					sigkillTimers.push(setTimeout(() => killTree("SIGKILL"), 4000));
 					safeResolve(1);
-				}, effectiveTimeout * 2 * 1000);
+				}, WATCHDOG_INTERVAL);
 
 				const cleanup = () => {
-					clearTimeout(hangTimer);
+					clearInterval(hangTimer);
 					if (watchdogId) { clearInterval(watchdogId); watchdogId = null; }
 					for (const t of sigkillTimers) clearTimeout(t);
 					sigkillTimers.length = 0;
@@ -751,7 +771,7 @@ async function runAgent(
 		}
 
 		trackComplete(statusId, false);
-		return lastResult ?? { agent: name, task, exitCode: 1, messages: [], stderr: "No models available for this agent." };
+		return lastResult ?? { agent: name, task, reason, exitCode: 1, messages: [], stderr: "No models available for this agent." };
 	} catch (e) {
 		trackComplete(statusId, false);
 		throw e;
@@ -780,11 +800,13 @@ async function mapLimit<I, O>(items: I[], limit: number, fn: (i: I, idx: number)
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Agent name" }),
 	task: Type.String({ description: "Task for the agent" }),
+	reason: Type.Optional(Type.String({ description: "Rationale for delegating this task" })),
 });
 const Params = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task (single mode)" })),
-	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task}" })),
+	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task, reason}" })),
+	reason: Type.Optional(Type.String({ description: "Rationale for delegation; used directly in single mode and as fallback for parallel tasks" })),
 	timeout: Type.Optional(Type.Number({ description: `Watchdog timeout in seconds (default: ${DEFAULT_TIMEOUT})` })),
 });
 
@@ -809,6 +831,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				: theme.fg("error", `✗ ${d.preview}`);
 			text += `\n${previewLine}`;
 		}
+		if (d.reason) text += `\n${theme.fg("dim", `reason: ${outputPreview(d.reason, 100)}`)}`;
 		text += theme.fg("dim", "  /subagents");
 		return new Text(text, 1, 0);
 	});
@@ -820,12 +843,13 @@ export function setupSubagent(pi: ExtensionAPI) {
 			"Delegate to a specialist subagent with an isolated context window.",
 			"Agents: planner, explorer, fixer, auditor, web-searcher (see agents/ dir).",
 			"Models/thinking from central config.json. Modes: single {agent,task}, parallel {tasks}.",
-			"Includes watchdog timeout detection for stuck providers.",
+			"Includes optional reason metadata and watchdog timeout detection for stuck providers.",
 		].join(" "),
 		parameters: Params,
 		promptSnippet: "Delegate scoped work to specialist subagents (planner/explorer/fixer/auditor/web-searcher)",
 		promptGuidelines: [
 			"Delegate by default: send heavy reasoning to planner, recon to explorer, implementation to fixer, review to auditor, research to web-searcher — keep the main context focused.",
+			"Include a brief reason when delegating so /subagents can show why the agent was called.",
 			"Give each fixer ONE small, concrete task (~1-3 files, a single concern). Oversized tasks stall the fixer; split them or run planner first.",
 			"Run independent tasks in parallel via { tasks: [...] }.",
 		],
@@ -859,7 +883,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const totalPanes = params.tasks!.length;
 				const sids = params.tasks!.map((t, i) => {
 					const sid = `par-${i}-${Date.now()}`;
-					trackAgent(sid, t.agent, t.task, timeout);
+					trackAgent(sid, t.agent, t.task, timeout, t.reason ?? params.reason);
 					return sid;
 				});
 
@@ -871,7 +895,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const cfg = loadConfig();
 				const concurrency = cfg.concurrency ?? DEFAULT_CONCURRENCY;
 				const results = await mapLimit(params.tasks!, concurrency, async (t, i) => {
-					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout);
+					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout, t.reason ?? params.reason);
 					completed++;
 					if (!failed(result)) okTally++;
 					if (result.stuck) stuckTally++;
@@ -890,12 +914,13 @@ export function setupSubagent(pi: ExtensionAPI) {
 						? {
 							agent: params.tasks!.map((x) => x.agent).join(", "),
 							task: `${totalPanes} parallel tasks`,
+							reason: params.reason,
 							ok: okTally === totalPanes,
 							durationMs: Date.now() - startMs,
 							preview: okTally === totalPanes ? `All ${totalPanes} tasks completed` : `${totalPanes - okTally} failed`,
 						}
 						: {
-							agent: t.agent, task: t.task, ok: !failed(result),
+							agent: t.agent, task: t.task, reason: t.reason ?? params.reason, ok: !failed(result),
 							model: result.model, durationMs: Date.now() - startMs,
 							preview: outputPreview(output(result)),
 						};
@@ -920,11 +945,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 			// Single mode
 			const sid = `single-${Date.now()}`;
-			trackAgent(sid, params.agent!, params.task!, timeout);
+			trackAgent(sid, params.agent!, params.task!, timeout, params.reason);
 			const startMs = Date.now();
 
 			try {
-				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, signal, sid, timeout);
+				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, signal, sid, timeout, params.reason);
 				const isError = failed(r);
 
 				pi.sendMessage({
@@ -932,7 +957,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					content: `${params.agent} ${r.stuck ? "timeout" : isError ? "failed" : "done"}`,
 					display: true,
 					details: {
-						agent: params.agent!, task: params.task!, ok: !isError,
+						agent: params.agent!, task: params.task!, reason: params.reason, ok: !isError,
 						model: r.model, durationMs: Date.now() - startMs,
 						preview: outputPreview(output(r)),
 					} satisfies SubagentCompleteDetails,
@@ -951,7 +976,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					content: `${params.agent} crashed`,
 					display: true,
 					details: {
-						agent: params.agent!, task: params.task!, ok: false,
+						agent: params.agent!, task: params.task!, reason: params.reason, ok: false,
 						durationMs: Date.now() - startMs,
 						preview: e instanceof Error ? e.message : String(e),
 					} satisfies SubagentCompleteDetails,
@@ -961,6 +986,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					transcript: trimTranscriptForPersist(activeSubagents.get(sid)?.transcript),
 					agent: params.agent!,
 					task: params.task!,
+					reason: params.reason,
 					ok: false,
 					durationMs: Date.now() - startMs,
 					output: e instanceof Error ? e.message : String(e),
@@ -1027,6 +1053,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				key: string;
 				agent: string;
 				subLabel: string;
+				reason?: string;
 				running: boolean;
 				ok: boolean;
 				stuck: boolean;
@@ -1052,6 +1079,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					key: s.id,
 					agent: s.agent,
 					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : s.task,
+					reason: s.reason,
 					running: s.status === "running" || s.status === "stuck",
 					ok: s.status === "done",
 					stuck: s.status === "stuck",
@@ -1064,6 +1092,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 					key: r.id ?? `${r.timestamp}-${r.agent}`,
 					agent: r.agent,
 					subLabel: r.task,
+					reason: r.reason,
 					running: false,
 					ok: r.ok,
 					stuck: r.stuck ?? false,
@@ -1211,6 +1240,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 							for (const w of wrapTextWithAnsi(`  ${cur.subLabel}`, Math.max(1, innerW))) {
 								out.push(row(theme.fg("dim", w)));
 							}
+							if (cur.reason) {
+								for (const w of wrapTextWithAnsi(`  Reason: ${cur.reason}`, Math.max(1, innerW))) {
+									out.push(row(theme.fg("dim", w)));
+								}
+							}
 							out.push(border("├" + hr + "┤"));
 							const lines = transcriptLines(cur, innerW);
 							const maxOffset = Math.max(0, lines.length - viewportH);
@@ -1251,6 +1285,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
 							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i });
 							listRows.push({ line: theme.fg("dim", `    ${it.subLabel}`), itemIdx: i });
+							if (sel && it.reason) listRows.push({ line: theme.fg("dim", `    reason: ${outputPreview(it.reason, 100)}`), itemIdx: i });
 						}
 						let winStart = 0;
 						if (listRows.length > viewportH) {

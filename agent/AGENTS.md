@@ -32,7 +32,8 @@ file — split work by file, and serialize any changes that touch the same file.
    - Run it, or send the diff to `auditor`.
    - No command exists? Say so — do not claim it is verified.
 6. Fixer returns `partial` or `blocked`? → re-split the task or send it back to
-   `planner`. Never re-send the same task unchanged.
+   `planner`. Never re-send the same task unchanged. Do not verify a
+   partial/blocked result as done — route it to re-planning.
 7. Report a short summary.
 
 ## Adapting the loop
