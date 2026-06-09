@@ -1097,6 +1097,19 @@ export function setupSubagent(pi: ExtensionAPI) {
 				let lastMaxOffset = 0;
 				let lastViewportH = 10;
 				let verbosity = 1; // 0=minimal, 1=normal, 2=verbose
+				let renderPending = false;
+				let renderTimer: ReturnType<typeof setTimeout> | undefined;
+				let disposed = false;
+				let lastInputAt = 0;
+				const markDirty = () => {
+					if (disposed || renderPending) return;
+					renderPending = true;
+					renderTimer = setTimeout(() => {
+						renderPending = false;
+						renderTimer = undefined;
+						if (!disposed) tui.requestRender();
+					}, 33);
+				};
 
 				const glyph = (it: InspectItem): string =>
 					it.stuck ? theme.fg("warning", "⚠")
@@ -1169,9 +1182,16 @@ export function setupSubagent(pi: ExtensionAPI) {
 					return lines;
 				};
 
-				// Self-refresh so running transcripts and elapsed times update live; a
-				// completion that lands while open is picked up via rebuildResults within 1s.
-				const interval = setInterval(() => { if (activeSubagents.size > 0) { rebuildResults(ctx); tui.requestRender(); } }, 1000);
+				// Coalesce live refreshes with keypress-driven renders. List view refreshes
+				// only while idle so navigation cannot race the periodic update.
+				const interval = setInterval(() => {
+					if (!expanded && Date.now() - lastInputAt < 350) return;
+					const hasLive = activeSubagents.size > 0;
+					rebuildResults(ctx);
+					if (!hasLive && resultHistory.length === 0) return;
+					if (!hasLive && !expanded) return;
+					markDirty();
+				}, 1000);
 
 				return {
 					render(width: number): string[] {
@@ -1198,7 +1218,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							out.push(row(theme.fg("dim", "  Results are scoped to the current branch.")));
 							for (let i = 0; i < viewportH; i++) out.push(row(""));
 							out.push(border("└" + hr + "┘"));
-							out.push(truncateToWidth(theme.fg("dim", "  q quit"), width));
+							out.push(truncateToWidth(theme.fg("dim", "  r refresh  q quit"), width));
 							return out;
 						}
 
@@ -1240,7 +1260,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							if (scrollOffset > 0) more.push("↑ more");
 							if (scrollOffset < maxOffset) more.push("↓ more");
 							const tail = more.length ? `   ${more.join("  ")}` : "";
-							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc back  q quit${tail}`), width));
+							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc back  q quit${tail}`), width));
 							return out;
 						}
 
@@ -1291,15 +1311,17 @@ export function setupSubagent(pi: ExtensionAPI) {
 						if (winStart > 0) listMore.push("↑ more");
 						if (winEnd < listRows.length) listMore.push("↓ more");
 						const listTail = listMore.length ? `   ${listMore.join("  ")}` : "";
-						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  ←→ switch  Enter open  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q quit${listTail}`), width));
+						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  ←→ switch  Enter open  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q quit${listTail}`), width));
 						return out;
 					},
 					invalidate() {},
 					handleInput(data: string) {
+						lastInputAt = Date.now();
 						if (matchesKey(data, "ctrl+c")) { done(); return; }
 						const items = buildItems();
 						if (items.length === 0) {
-							if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
+							if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); markDirty(); }
+							else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
 							return;
 						}
 						let idx = items.findIndex((i) => i.key === selectedKey);
@@ -1320,12 +1342,13 @@ export function setupSubagent(pi: ExtensionAPI) {
 							else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
 							else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
 							else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
+							else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
 							else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
 							else if (matchesKey(data, "escape")) {
 								expanded = false;
 							}
-							else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
-							tui.requestRender();
+							else if (matchesKey(data, "q") || matchesKey(data, "Q")) { done(); return; }
+							markDirty();
 							return;
 						}
 
@@ -1336,11 +1359,16 @@ export function setupSubagent(pi: ExtensionAPI) {
 						else if (matchesKey(data, "home")) select(0);
 						else if (matchesKey(data, "end")) select(items.length - 1);
 						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { const opening = items[idx]; expanded = true; atBottom = !!opening?.running; scrollOffset = 0; }
+						else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
 						else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
-						else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
-						tui.requestRender();
+						else if (matchesKey(data, "q") || matchesKey(data, "Q")) { done(); return; }
+						markDirty();
 					},
-					dispose() { clearInterval(interval); },
+					dispose() {
+						disposed = true;
+						clearInterval(interval);
+						if (renderTimer) clearTimeout(renderTimer);
+					},
 				};
 			});
 			} finally {
