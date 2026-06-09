@@ -70,7 +70,7 @@ class TodoPanel {
 export function setupTodo(pi: ExtensionAPI) {
 	let todos: Todo[] = [];
 	let nextId = 1;
-	let folded = false;
+	let folded = true;
 
 	const rebuild = (ctx: ExtensionContext) => {
 		todos = [];
@@ -112,31 +112,32 @@ export function setupTodo(pi: ExtensionAPI) {
 		ctx.ui.setWidget("picopi-todo", (_tui, th) => ({
 			invalidate() {},
 			render(width: number): string[] {
+				const lineClip = (s: string) => truncateToWidth(s, Math.max(1, width), "…");
 				const label = `${count} todo${count !== 1 ? "s" : ""}`;
 				if (isFolded) {
-					return [th.fg("muted", `▸ ${label} `) + th.fg("dim", "alt+t")];
+					return [lineClip(th.fg("muted", `▸ ${label} `) + th.fg("dim", "alt+t"))];
 				}
 				// Account for the "  ○ " prefix and the framework's paddingX.
 				const textWidth = Math.max(8, width - 6);
 				const clip = (s: string) => truncateToWidth(s, textWidth, "…");
-				const lines: string[] = [th.fg("accent", `▾ ${label}`) + " " + th.fg("dim", "alt+t")];
+				const lines: string[] = [lineClip(th.fg("accent", `▾ ${label}`) + " " + th.fg("dim", "alt+t"))];
 				for (const text of openText) {
 					lines.push("  " + th.fg("dim", "○ ") + th.fg("muted", clip(text)));
 				}
 				if (doneText.length > 0) {
-					lines.push(th.fg("dim", `  ── ${doneText.length} done ──`));
+					lines.push(lineClip(th.fg("dim", `  ── ${doneText.length} done ──`)));
 					for (const text of doneText) {
 						lines.push("  " + th.fg("success", "✓ ") + th.fg("dim", clip(text)));
 					}
 				}
-				return lines;
+				return lines.map(lineClip);
 			},
 		}));
 	};
 
 	pi.on("session_start", async (_e, ctx) => {
-		// Reset the per-session UI preference; a new session starts unfolded.
-		folded = false;
+		// Reset the per-session UI preference; a new session starts with subtle one-line status.
+		folded = true;
 		rebuild(ctx);
 	});
 	pi.on("session_tree", async (_e, ctx) => rebuild(ctx));

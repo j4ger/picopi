@@ -168,7 +168,7 @@ function trimTranscriptForPersist(t: TranscriptEntry[] | undefined): TranscriptE
 // Global state
 
 const activeSubagents = new Map<string, SubagentStatus>();
-let statusHandle: { hide(): void; setHidden(h: boolean): void } | null = null;
+const cleanupTimers = new Map<string, NodeJS.Timeout>();
 let extensionCtx: any = null;
 const resultHistory: SubagentResultEntry[] = [];
 
@@ -272,157 +272,100 @@ function isModelError(r: RunResult): boolean {
 
 // Status Panel
 
-const MAX_DISPLAY_SUBAGENTS = 4;
-const MAX_RUNNING_IN_STATS = 3;
 // Status symbols: running=◌ done=✓ stuck=⚠ failed=✗
 const STATUS_ICON: Record<string, string> = { running: "◌", done: "✓", stuck: "⚠", failed: "✗" };
 let inspectorOpen = false;
+let subagentsFolded = true;
 
 function updateStatusPanel(context?: any) {
 	if (context) extensionCtx = context;
 	if (!extensionCtx) return;
 
-	if (inspectorOpen) {
-		statusHandle?.hide();
-		statusHandle = null;
+	if (inspectorOpen || activeSubagents.size === 0) {
+		extensionCtx.ui.setWidget("picopi-subagents", undefined);
 		return;
 	}
 
-	if (activeSubagents.size === 0) {
-		statusHandle?.hide();
-		statusHandle = null;
-		return;
-	}
+	// Snapshot state for the render callback — must not read extensionCtx.ui.theme outside render
+	const all = [...activeSubagents.values()];
+	const isFolded = subagentsFolded;
 
-	if (!statusHandle) {
-		try {
-			statusHandle = extensionCtx.ui.custom(
-				(tui: any, theme: any) => {
-					const container = new Container();
+	extensionCtx.ui.setWidget("picopi-subagents", (_tui: any, theme: any) => ({
+		invalidate() {},
+		render(width: number): string[] {
+			const clip = (line: string) => truncateToWidth(line, Math.max(1, width), "…");
+			const counts = {
+				running: all.filter(s => s.status === "running").length,
+				stuck: all.filter(s => s.status === "stuck").length,
+				failed: all.filter(s => s.status === "failed").length,
+				done: all.filter(s => s.status === "done").length,
+			};
 
-					const render = () => {
-						container.clear();
-						container.addChild(new Text(theme.fg("accent", " Subagents "), 0, 0));
+			if (isFolded) {
+				// Folded: one-line overview
+				const parts: string[] = [];
+				if (counts.running) parts.push(theme.fg("warning", `◌${counts.running}`));
+				if (counts.stuck) parts.push(theme.fg("warning", `⚠${counts.stuck}`));
+				if (counts.failed) parts.push(theme.fg("error", `✗${counts.failed}`));
+				if (counts.done) parts.push(theme.fg("success", `✓${counts.done}`));
 
-						const sorted = [...activeSubagents.values()].sort((a, b) =>
-							a.status === b.status ? a.startTime - b.startTime :
-							a.status === "running" ? -1 : b.status === "running" ? 1 :
-							a.status === "stuck" ? -1 : 1
-						);
+				let line = theme.fg("dim", " subagents ") + parts.join(" ");
 
-						// When there are too many subagents to show individually,
-						// switch to a compact statistics view to avoid truncation.
-						if (sorted.length > MAX_DISPLAY_SUBAGENTS) {
-							const counts = {
-								running: sorted.filter(s => s.status === "running").length,
-								done: sorted.filter(s => s.status === "done").length,
-								stuck: sorted.filter(s => s.status === "stuck").length,
-								failed: sorted.filter(s => s.status === "failed").length,
-							};
-							const totalMs = sorted.reduce((sum, s) => sum + ((s.endTime ?? Date.now()) - s.startTime), 0);
-							const avgMs = totalMs / sorted.length;
-
-							container.addChild(new Text(
-								theme.fg("text", ` ${sorted.length} total`) + theme.fg("dim", ` · ${formatDuration(avgMs)} avg`),
-								1, 0
-							));
-
-							if (counts.stuck) container.addChild(new Text(theme.fg("warning", ` ⚠ ${counts.stuck} stuck`), 1, 0));
-							if (counts.failed) container.addChild(new Text(theme.fg("error", ` ✗ ${counts.failed} failed`), 1, 0));
-							if (counts.running) container.addChild(new Text(theme.fg("warning", ` ◌ ${counts.running} running`), 1, 0));
-							if (counts.done) container.addChild(new Text(theme.fg("success", ` ✓ ${counts.done} done`), 1, 0));
-
-							// Show stuck agents first, then running ones (prioritize attention-needed)
-							const stuckAgents = sorted.filter(s => s.status === "stuck");
-							const running = sorted.filter(s => s.status === "running");
-							const prioritized = [...stuckAgents, ...running];
-							if (prioritized.length) {
-								container.addChild(new Spacer(1));
-								for (const sub of prioritized.slice(0, MAX_RUNNING_IN_STATS)) {
-									const elapsed = formatDuration(Date.now() - sub.startTime);
-									const icon = STATUS_ICON[sub.status] ?? "◌";
-									const col = sub.status === "stuck" ? "warning" : "warning";
-									container.addChild(new Text(
-										theme.fg(col, ` ${icon} ${truncateToWidth(sub.agent, 12, "")}`) + theme.fg("dim", ` ${elapsed}`),
-										1, 0
-									));
-								}
-								if (prioritized.length > MAX_RUNNING_IN_STATS) {
-									container.addChild(new Text(theme.fg("dim", ` +${prioritized.length - MAX_RUNNING_IN_STATS} more`), 1, 0));
-								}
-							}
-						} else {
-							// Compute dynamic display width for agent names
-							const nameW = Math.min(16, Math.max(8, ...sorted.map(s => visibleWidth(s.agent))));
-							for (const sub of sorted) {
-								const icon = STATUS_ICON[sub.status] ?? "◌";
-								const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
-								const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
-
-								container.addChild(new Text(
-									theme.fg(color, ` ${icon} ${truncateToWidth(sub.agent, nameW, "")}`) + theme.fg("dim", ` ${elapsed}`),
-									1, 0
-								));
-
-								if (sub.status === "stuck") {
-									container.addChild(new Text(theme.fg("warning", "    timeout"), 1, 0));
-								} else if (sub.status === "failed") {
-									container.addChild(new Text(theme.fg("error", "    failed"), 1, 0));
-								} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
-									container.addChild(new Text(theme.fg("dim", `    ${truncateToWidth(sub.progress || sub.currentTool!, 22, "...")}`), 1, 0));
-								}
-							}
-
-							const activeRunning = [...activeSubagents.values()].filter(s => s.status === "running").length;
-							const stuck = [...activeSubagents.values()].filter(s => s.status === "stuck").length;
-							const failed2 = [...activeSubagents.values()].filter(s => s.status === "failed").length;
-							if (activeRunning || stuck || failed2) {
-								container.addChild(new Spacer(1));
-								const parts: string[] = [];
-								if (stuck) parts.push(`⚠ ${stuck} stuck`);
-								if (failed2) parts.push(`✗ ${failed2} failed`);
-								if (activeRunning) parts.push(`◌ ${activeRunning} running`);
-								container.addChild(new Text(theme.fg(stuck || failed2 ? "warning" : "muted", parts.join(" ")), 1, 0));
-							}
-						}
-						container.addChild(new Spacer(1));
-						container.addChild(new Text(theme.fg("dim", " /subagents to inspect"), 1, 0));
-					};
-
-					render();
-					const interval = setInterval(() => { render(); tui.requestRender(); }, 1000);
-					return {
-						render: (w: number) => {
-							const border = (s: string) => theme.fg("accent", s);
-							// Dynamic width: fit content, clamp to avoid excessively wide panel
-							const rendered = container.render(w - 2);
-							const maxContent = rendered.reduce((mx, l) => Math.max(mx, visibleWidth(l)), 0);
-							const dynInner = Math.min(w - 2, Math.max(22, maxContent));
-							const innerW = dynInner;
-							const hr = "─".repeat(innerW);
-							const out: string[] = [];
-							out.push(border("┌" + hr + "┐"));
-							for (const raw of rendered) {
-								const inner = truncateToWidth(raw, innerW);
-								const pad = innerW - visibleWidth(inner);
-								out.push(border("│") + inner + " ".repeat(Math.max(0, pad)) + border("│"));
-							}
-							out.push(border("└" + hr + "┘"));
-							return out.map(line => truncateToWidth(line, w));
-						},
-						invalidate: () => container.invalidate(),
-						handleInput: () => {},
-						dispose: () => clearInterval(interval),
-					};
-				},
-				{
-					overlay: true,
-					overlayOptions: { anchor: "right-center", width: 28, maxHeight: "90%", margin: { right: 1 }, nonCapturing: true },
-					onHandle: (h: any) => { statusHandle = h; },
+				// Top running agent with elapsed and progress
+				const running = all.filter(s => s.status === "running");
+				if (running.length > 0) {
+					const top = running.reduce((a, b) => a.startTime < b.startTime ? a : b);
+					const elapsed = formatDuration(Date.now() - top.startTime);
+					line += theme.fg("dim", "  ·  ") + theme.fg("warning", truncateToWidth(top.agent, 14, "")) + theme.fg("dim", ` ${elapsed}`);
+					if (top.progress || top.currentTool) {
+						line += theme.fg("dim", ` (${truncateToWidth(top.progress || top.currentTool!, 18, "…")})`);
+					}
 				}
-			);
-		} catch { /* overlay failed */ }
-	}
+
+				line += theme.fg("dim", "  ·  [alt+s] [/subagents]");
+				return [clip(line)];
+			}
+
+			// Expanded: compact list of active subagents, capped to ~12 lines
+			const lines: string[] = [];
+
+			const sorted = [
+				...all.filter(s => s.status === "stuck"),
+				...all.filter(s => s.status === "failed"),
+				...all.filter(s => s.status === "running"),
+				...all.filter(s => s.status === "done"),
+			];
+
+			const maxDisplay = 10;
+			const shown = sorted.slice(0, maxDisplay);
+			const remaining = sorted.length - shown.length;
+
+			for (const sub of shown) {
+				const icon = STATUS_ICON[sub.status] ?? "◌";
+				const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
+				const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
+				const label = `${icon} ${truncateToWidth(sub.agent, 14, "")} ${elapsed}`;
+
+				if (sub.status === "stuck") {
+					lines.push(theme.fg(color, label) + theme.fg("warning", " timeout"));
+				} else if (sub.status === "failed") {
+					lines.push(theme.fg(color, label) + theme.fg("error", " failed"));
+				} else if (sub.status === "running" && (sub.progress || sub.currentTool)) {
+					lines.push(theme.fg(color, label) + theme.fg("dim", `  ${truncateToWidth(sub.progress || sub.currentTool!, 22, "…")}`));
+				} else {
+					lines.push(theme.fg(color, label));
+				}
+			}
+
+			if (remaining > 0) {
+				lines.push(theme.fg("dim", ` +${remaining} more`));
+			}
+
+			lines.push(theme.fg("dim", " [alt+s] fold · [/subagents] inspect"));
+
+			return lines.map(clip);
+		},
+	}));
 }
 
 const pushTranscript = (id: string, kind: TranscriptEntry["kind"], text: string, opts?: { toolName?: string; args?: any; result?: any; isError?: boolean }) => {
@@ -464,7 +407,25 @@ const summarizeResult = (tool?: string, result?: any): string => {
 	return String(result).slice(0, 60);
 };
 
+const clearCleanupTimer = (id: string) => {
+	const timer = cleanupTimers.get(id);
+	if (timer) clearTimeout(timer);
+	cleanupTimers.delete(id);
+};
+
+const scheduleCleanup = (id: string, status: SubagentStatus["status"], delay: number) => {
+	clearCleanupTimer(id);
+	const timer = setTimeout(() => {
+		const current = activeSubagents.get(id);
+		if (current?.status === status) activeSubagents.delete(id);
+		cleanupTimers.delete(id);
+		updateStatusPanel();
+	}, delay);
+	cleanupTimers.set(id, timer);
+};
+
 const trackAgent = (id: string, agent: string, task: string, timeout?: number, reason?: string) => {
+	clearCleanupTimer(id);
 	const now = Date.now();
 	const sub: SubagentStatus = { id, agent, task, reason, status: "running", startTime: now, lastActivity: now, timeout, transcript: [] };
 	activeSubagents.set(id, sub);
@@ -474,6 +435,11 @@ const trackAgent = (id: string, agent: string, task: string, timeout?: number, r
 const trackProgress = (id: string, progress?: string, tool?: string) => {
 	const sub = activeSubagents.get(id);
 	if (!sub) return;
+	clearCleanupTimer(id);
+	if (sub.status !== "running") {
+		sub.status = "running";
+		sub.endTime = undefined;
+	}
 	if (progress) sub.progress = progress;
 	if (tool) sub.currentTool = tool;
 	sub.lastActivity = Date.now();
@@ -486,7 +452,7 @@ const trackComplete = (id: string, success: boolean) => {
 	sub.status = success ? "done" : "failed";
 	sub.endTime = Date.now();
 	updateStatusPanel();
-	setTimeout(() => { activeSubagents.delete(id); updateStatusPanel(); }, success ? 3000 : 5000);
+	scheduleCleanup(id, sub.status, success ? 3000 : 5000);
 };
 
 const trackStuck = (id: string) => {
@@ -495,7 +461,7 @@ const trackStuck = (id: string) => {
 	sub.status = "stuck";
 	sub.endTime = Date.now();
 	updateStatusPanel();
-	setTimeout(() => { activeSubagents.delete(id); updateStatusPanel(); }, 8000);
+	scheduleCleanup(id, "stuck", 8000);
 };
 
 // Agent Discovery
@@ -820,9 +786,22 @@ const Params = Type.Object({
 // Extension
 
 export function setupSubagent(pi: ExtensionAPI) {
-	pi.on("session_start", (_e, ctx) => { extensionCtx = ctx; rebuildResults(ctx); });
+	// Lightweight elapsed-time updater while subagents are live
+	const _liveTimer = setInterval(() => {
+		if (!extensionCtx || activeSubagents.size === 0 || inspectorOpen) return;
+		const hasLive = [...activeSubagents.values()].some(s => s.status === "running" || s.status === "stuck");
+		if (hasLive) updateStatusPanel(extensionCtx);
+	}, 2000);
+
+	pi.on("session_start", (_e, ctx) => { extensionCtx = ctx; subagentsFolded = true; rebuildResults(ctx); updateStatusPanel(ctx); });
 	pi.on("session_tree", (_e, ctx) => rebuildResults(ctx));
-	pi.on("session_shutdown", () => { activeSubagents.clear(); statusHandle?.hide(); statusHandle = null; });
+	pi.on("session_shutdown", () => {
+		activeSubagents.clear();
+		for (const timer of cleanupTimers.values()) clearTimeout(timer);
+		cleanupTimers.clear();
+		clearInterval(_liveTimer);
+		if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
+	});
 
 	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
 		const d = message.details as SubagentCompleteDetails | undefined;
@@ -1053,8 +1032,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 			}
 			rebuildResults(ctx);
 			inspectorOpen = true;
-			statusHandle?.hide();
-			statusHandle = null;
+			if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
 			// Continue into the inspector even when empty — it shows guidance
 			// Combined live + history inspector. Selection is keyed by a stable `key`
 			// (the subagent id) so an agent finishing mid-view doesn't shift the
@@ -1369,21 +1347,20 @@ export function setupSubagent(pi: ExtensionAPI) {
 					},
 					dispose() { clearInterval(interval); },
 				};
-			},
-			{
-				overlay: true,
-				overlayOptions: {
-					width: "95%",
-					anchor: "top-center" as const,
-					margin: 1,
-					maxHeight: "90%",
-				},
-				}
-				);
+			});
 			} finally {
 				inspectorOpen = false;
 				updateStatusPanel(ctx);
 			}
+		},
+	});
+
+	// alt+s toggle fold
+	pi.registerShortcut("alt+s", {
+		description: "Toggle subagents widget fold",
+		handler: async (ctx) => {
+			subagentsFolded = !subagentsFolded;
+			updateStatusPanel(ctx);
 		},
 	});
 }
