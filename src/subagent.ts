@@ -817,7 +817,6 @@ export function setupSubagent(pi: ExtensionAPI) {
 			text += `\n${previewLine}`;
 		}
 		if (d.reason) text += `\n${theme.fg("dim", `reason: ${outputPreview(d.reason, 100)}`)}`;
-		text += theme.fg("dim", "  /subagents");
 		return new Text(text, 1, 0);
 	});
 
@@ -1006,17 +1005,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 					if (out) { c.addChild(new Spacer(1)); c.addChild(new Markdown(out.trim(), 0, 0, md)); }
 					c.addChild(new Spacer(1));
 				} else {
-					// Compact: one row per agent with short preview
-					const rawOut = finalOutput(r.messages) || output(r);
-					const preview = rawOut.split("\n").find(l => l.trim()) ?? "";
-					const previewStr = preview.length > 80 ? preview.slice(0, 80) + "…" : preview;
-					const previewColored = failed(r)
-						? theme.fg("error", `✗ ${previewStr}`)
-						: theme.fg("toolOutput", previewStr);
-					c.addChild(new Text(`${head}  ${previewColored}`, 0, 0));
+					// Compact: one row per agent, no preview (completion message has details)
+					c.addChild(new Text(head, 0, 0));
 				}
 			}
-			if (!expanded) c.addChild(new Text(theme.fg("muted", "(Ctrl+O to expand · /subagents for details)"), 0, 0));
+			if (!expanded) c.addChild(new Text(theme.fg("muted", "(Ctrl+O to expand)"), 0, 0));
 			return c;
 		},
 	});
