@@ -309,20 +309,21 @@ function updateStatusPanel(context?: any) {
 				if (counts.failed) parts.push(theme.fg("error", `✗${counts.failed}`));
 				if (counts.done) parts.push(theme.fg("success", `✓${counts.done}`));
 
-				let line = theme.fg("muted", "▸ subagents") + "  " + parts.join(" ");
+				let line = theme.fg("muted", "▸ subagents");
+				if (parts.length > 0) line += theme.fg("dim", " ") + parts.join(theme.fg("dim", " "));
 
 				// Top running agent with elapsed and progress
 				const running = all.filter(s => s.status === "running");
 				if (running.length > 0) {
 					const top = running.reduce((a, b) => a.startTime < b.startTime ? a : b);
 					const elapsed = formatDuration(Date.now() - top.startTime);
-					line += theme.fg("dim", "  ·  ") + theme.fg("warning", truncateToWidth(top.agent, 12, "")) + theme.fg("dim", ` ${elapsed}`);
+					line += theme.fg("dim", " │ ") + theme.fg("warning", truncateToWidth(top.agent, 12, "")) + theme.fg("dim", ` ${elapsed}`);
 					if (top.progress || top.currentTool) {
-						line += theme.fg("dim", ` (${truncateToWidth(top.progress || top.currentTool!, 16, "…")})`);
+						line += theme.fg("dim", ` · ${truncateToWidth(top.progress || top.currentTool!, 16, "…")}`);
 					}
 				}
 
-				line += theme.fg("dim", "  ·  ") + theme.fg("dim", "[alt+s]");
+				line += theme.fg("dim", " │ alt+s");
 				return [clip(line)];
 			}
 
@@ -1241,7 +1242,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							out.push(row(`${glyph(cur)} ${theme.fg("accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${status}`));
 							const detailRows = [
 								...wrapTextWithAnsi(`  ${cur.subLabel}`, Math.max(1, innerW)).slice(0, 2),
-								...(cur.reason ? wrapTextWithAnsi(`  Reason: ${cur.reason}`, Math.max(1, innerW)).slice(0, 2) : []),
+								...(cur.reason ? wrapTextWithAnsi(`  ↳ ${cur.reason}`, Math.max(1, innerW)).slice(0, 2) : []),
 							];
 							for (const detail of detailRows.slice(0, 4)) out.push(row(theme.fg("dim", detail)));
 							while (out.length < 6) out.push(row(""));
@@ -1260,7 +1261,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							if (scrollOffset > 0) more.push("↑ more");
 							if (scrollOffset < maxOffset) more.push("↓ more");
 							const tail = more.length ? `   ${more.join("  ")}` : "";
-							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter collapse  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  Esc back  q quit${tail}`), width));
+							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Home/End  ←→ switch  Enter/q/Esc back  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}${tail}`), width));
 							return out;
 						}
 
@@ -1286,7 +1287,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const model = it.model ? theme.fg("dim", ` ${it.model}`) : "";
 							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
 							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i });
-							const subLabel = sel && it.reason ? `${it.subLabel} · reason: ${outputPreview(it.reason, 80)}` : it.subLabel;
+							const subLabel = sel && it.reason ? `${it.subLabel} · ↳ ${outputPreview(it.reason, 80)}` : it.subLabel;
 							listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i });
 						}
 						let winStart = 0;
@@ -1347,7 +1348,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							else if (matchesKey(data, "escape")) {
 								expanded = false;
 							}
-							else if (matchesKey(data, "q") || matchesKey(data, "Q")) { done(); return; }
+							else if (matchesKey(data, "q") || matchesKey(data, "Q")) { expanded = false; }
 							markDirty();
 							return;
 						}
