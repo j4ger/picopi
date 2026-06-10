@@ -13,6 +13,7 @@ import { clearPicopiFooterNote, setupFooter } from "./footer.ts";
 import { setupSubagent } from "./subagent.ts";
 import { setupTodo } from "./todo.ts";
 import { setupUndo } from "./undo.ts";
+import { setupRtkBash } from "./rtk-bash.ts";
 import { setupWeb } from "./web.ts";
 
 /** Render read-only lines in a bordered overlay box; closes on Enter/Esc. */
@@ -46,6 +47,7 @@ export default function (pi: ExtensionAPI) {
 	setupTodo(pi);
 	setupSubagent(pi);
 	setupWeb(pi);
+	setupRtkBash(pi);
 
 	// --- /preset command ----------------------------------------------------------
 	pi.registerCommand("preset", {

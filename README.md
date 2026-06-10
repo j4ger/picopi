@@ -10,6 +10,7 @@ config file. Ships with an **Ayu Dark**-inspired terminal theme.
 - **Undo** — Rewind conversation and workspace files on double-ESC
 - **Todos** — Branch-aware task list with live widget
 - **Subagents** — Specialist agents (planner, explorer, fixer, auditor, web-searcher) with real-time status and timeout detection
+- **rtk bash** — Bash commands transparently rewritten via [rtk](https://github.com/different-ai/rtk) when available, for token-efficient output
 - **Model routing** — Role-based aliases with ordered fallback chains
 
 ## Quickstart
@@ -215,6 +216,19 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 - Switching updates the orchestrator, subagents, compaction, etc. to follow the new chains instantly.
 - The last-used preset is tracked **per workspace** and **persists across restarts and session resumes** (stored in `~/.config/picopi/state.json`, keyed by directory).
 - If an `@preset` variant is missing for an alias, the base alias is used as a fallback, so partial presets are safe.
+
+### rtk bash rewriting
+
+If [rtk](https://github.com/different-ai/rtk) is on PATH, picopi overrides the
+built-in `bash` tool: each command is first passed through `rtk rewrite`.
+Handled commands (exit 3) run as their compact `rtk <subcmd>` equivalent;
+unhandled commands (exit 1) run unchanged. Without rtk installed, behavior is
+identical to the built-in bash tool.
+
+The model can pass `raw: true` to bypass rewriting when exact byte output is
+needed (e.g. binary data, parsing-sensitive output). The availability check
+(`command -v rtk`) is cached once per session; the rewrite probe is capped at 2
+seconds and falls back to the original command on any error.
 
 ### Web search providers
 
