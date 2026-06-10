@@ -133,7 +133,10 @@ export function setupRtkBash(pi: ExtensionAPI) {
 			"Set raw: true to bypass rewriting when exact/binary output is required.",
 		parameters: RtkBashParams,
 		promptSnippet: template.promptSnippet,
-		promptGuidelines: template.promptGuidelines,
+		promptGuidelines: [
+			...(template.promptGuidelines ?? []),
+			"If rtk-rewritten output seems to strip important details, retry the same command with raw: true to see the full unfiltered output.",
+		],
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			let command = params.command;
 			if (!params.raw && (await checkRtkAvailable())) {
