@@ -672,8 +672,8 @@ export function setupWeb(pi: ExtensionAPI) {
 		label: "Web Search",
 		description:
 			"Search the web. Returns a synthesized answer (perplexity) or ranked sources (exa/brave/duckduckgo). Pass `queries` for several searches. Zero-config via DuckDuckGo; set EXA_API_KEY / PERPLEXITY_API_KEY / BRAVE_API_KEY for better results.",
-		promptSnippet: "Search the web with web_search (query or queries[])",
-		promptGuidelines: ["Use web_search for up-to-date facts; prefer several varied queries over one broad query."],
+		promptSnippet: "Search web with web_search (query/queries[])",
+		promptGuidelines: ["Use web_search for current facts; run several focused queries."],
 		parameters: SearchParams,
 		async execute(_id, params, signal, _onUpdate, _ctx) {
 			const MAX_ENTRIES = 5;
@@ -719,8 +719,8 @@ export function setupWeb(pi: ExtensionAPI) {
 		label: "Fetch",
 		description:
 			"Fetch a URL and return readable content (HTML stripped to text/markdown; JSON/text returned as-is). Pass `urls` to fetch several. Output is capped at 30k chars.",
-		promptSnippet: "Read a web page with fetch_content (url or urls[])",
-		promptGuidelines: ["Use fetch_content to read pages found via web_search before relying on snippets."],
+		promptSnippet: "Read pages with fetch_content (url/urls[])",
+		promptGuidelines: ["Use fetch_content to verify web_search snippets."],
 		parameters: FetchParams,
 		async execute(_id, params, signal, _onUpdate, _ctx) {
 			const MAX_ENTRIES = 5;

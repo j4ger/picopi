@@ -135,7 +135,7 @@ export function setupRtkBash(pi: ExtensionAPI) {
 		promptSnippet: template.promptSnippet,
 		promptGuidelines: [
 			...(template.promptGuidelines ?? []),
-			"If rtk-rewritten output seems to strip important details, retry the same command with raw: true to see the full unfiltered output.",
+			"If rtk output seems stripped, rerun with raw: true.",
 		],
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			let command = params.command;

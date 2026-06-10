@@ -1,5 +1,5 @@
 ---
-description: Code review via auditor subagent
+description: Review via auditor
 argument-hint: "[focus]"
 ---
-Review recent changes${@:+ (focus: $@)}.
+Review changes${@:+ (focus: $@)}.

@@ -1,5 +1,5 @@
 ---
-description: Web research via web-searcher subagent
+description: Research via web-searcher
 argument-hint: "<question>"
 ---
 Research: $@

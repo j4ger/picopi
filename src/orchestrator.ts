@@ -127,7 +127,7 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 		if (toSummarize.length === 0) return;
 
 		const conversationText = serializeConversation(convertToLlm(toSummarize));
-		const prev = previousSummary ? `\n\nPrevious summary for context:\n${previousSummary}` : "";
+		const prev = previousSummary ? `\n\nPrevious summary:\n${previousSummary}` : "";
 
 		// Bound compaction wall-clock (a hung cheap model shouldn't stall the
 		// session); chain the agent's abort signal with a timeout. Set up only once
@@ -147,9 +147,9 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 							content: [
 								{
 									type: "text" as const,
-									text: `Summarize this engineering conversation so work can continue without the raw history.${prev}
+									text: `Summarize this engineering conversation for continuation.${prev}
 
-Capture: goals, key decisions + rationale, code/file changes, current state, blockers, and planned next steps. Be thorough but compact. Output structured markdown.
+Include: goals; decisions/rationale; code/file changes; current state; blockers; next steps. Structured Markdown; compact but complete.
 
 <conversation>
 ${conversationText}

@@ -156,9 +156,9 @@ export function setupTodo(pi: ExtensionAPI) {
 		name: "todo",
 		label: "Todo",
 		description: "Manage the task list. actions: list | add(text) | toggle(id) | remove(id) | clear",
-		promptSnippet: "Track multi-step work with the todo tool (add/toggle/remove/clear/list)",
+		promptSnippet: "Track multi-step work with todo",
 		promptGuidelines: [
-			"Use the todo tool to plan and track multi-step tasks; add items up front, toggle them done as you finish.",
+			"Use todo for multi-step work; add items first, toggle as done.",
 		],
 		parameters: TodoParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {

@@ -831,12 +831,12 @@ export function setupSubagent(pi: ExtensionAPI) {
 			"Includes optional reason metadata and watchdog timeout detection for stuck providers.",
 		].join(" "),
 		parameters: Params,
-		promptSnippet: "Delegate scoped work to specialist subagents (planner/explorer/fixer/auditor/web-searcher)",
+		promptSnippet: "Delegate to specialist subagents",
 		promptGuidelines: [
-			"Delegate by default: send heavy reasoning to planner, recon to explorer, implementation to fixer, review to auditor, research to web-searcher — keep the main context focused.",
-			"Include a brief reason when delegating so /subagents can show why the agent was called.",
-			"Give each fixer ONE small, concrete task (~1-3 files, a single concern). Oversized tasks stall the fixer; split them or run planner first.",
-			"Run independent tasks in parallel via { tasks: [...] }.",
+			"Delegate by default: planner=reasoning, explorer=recon, fixer=implementation, auditor=review, web-searcher=research.",
+			"Include a brief reason for /subagents.",
+			"Fixer tasks: one concrete concern, ~1-3 files; split or plan first if larger.",
+			"Parallel { tasks: [...] } only for independent work.",
 		],
 
 		async execute(_id, params, signal, onUpdate, ctx) {
