@@ -879,6 +879,59 @@ export function setupSubagent(pi: ExtensionAPI) {
 
 				const cfg = loadConfig();
 				const concurrency = cfg.concurrency ?? DEFAULT_CONCURRENCY;
+				// Batch buffer + debounce: merge near-simultaneous completions
+				interface PendingCompletion {
+					t: (typeof params.tasks)[number];
+					result: RunResult;
+					completed: number;
+					okTally: number;
+					stuckTally: number;
+					startMs: number;
+				}
+				const pendingCompletions: PendingCompletion[] = [];
+				let debounceTimer: NodeJS.Timeout | null = null;
+				const FLUSH_DEBOUNCE_MS = 500;
+
+				/** Flush accumulated completions as one steer message. */
+				const flushPending = () => {
+					if (pendingCompletions.length === 0) return;
+					const batch = pendingCompletions.splice(0);
+					const totalPanes = params.tasks!.length;
+					const last = batch[batch.length - 1];
+					const ok = last.okTally;
+					const stuck = last.stuckTally;
+					const start = batch[0].startMs;
+					const agents = [...new Set(batch.map((p) => p.t.agent))];
+					const agentList = agents.join(", ");
+					const summary = stuck > 0 ? `${ok} ok, ${stuck} timeout` : `${ok}/${totalPanes} ok`;
+					const content = batch.length === 1
+						? `${batch[0].t.agent} ${failed(batch[0].result) ? "failed" : "done"}`
+						: `${agentList} done · batch ${summary}`;
+					pi.sendMessage({
+						customType: "subagent-complete",
+						content,
+						display: true,
+						details: {
+							agent: agentList,
+							task: batch.length === 1
+								? batch[0].t.task
+								: `${totalPanes} parallel tasks`,
+							reason: batch[0].t.reason ?? params.reason,
+							ok: ok === totalPanes,
+							durationMs: Date.now() - start,
+							preview: ok === totalPanes
+								? `All ${totalPanes} tasks completed`
+								: `${totalPanes - ok} failed`,
+						} satisfies SubagentCompleteDetails,
+					}, { deliverAs: "steer" });
+					// Schedule another flush for completions during orchestrator's turn.
+					if (debounceTimer) clearTimeout(debounceTimer);
+					debounceTimer = setTimeout(() => {
+						debounceTimer = null;
+						flushPending();
+					}, FLUSH_DEBOUNCE_MS);
+				};
+
 				const results = await mapLimit(params.tasks!, concurrency, async (t, i) => {
 					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout, t.reason ?? params.reason);
 					completed++;
@@ -890,29 +943,18 @@ export function setupSubagent(pi: ExtensionAPI) {
 						details: { completed, total: totalPanes },
 					});
 
-					// Only the last completion sends a steer message (triggers one
-					// orchestrator turn). Intermediate completions stream via onUpdate
-					// above and are visible in the /subagents inspector.
-					const isLast = completed === totalPanes;
-					if (isLast) {
-						const batchSummary = stuckTally > 0
-							? `${okTally} ok, ${stuckTally} timeout`
-							: `${okTally}/${totalPanes} ok`;
-						pi.sendMessage({
-							customType: "subagent-complete",
-							content: `batch ${batchSummary}`,
-							display: true,
-							details: {
-								agent: params.tasks!.map((x) => x.agent).join(", "),
-								task: `${totalPanes} parallel tasks`,
-								reason: params.reason,
-								ok: okTally === totalPanes,
-								durationMs: Date.now() - startMs,
-								preview: okTally === totalPanes
-									? `All ${totalPanes} tasks completed`
-									: `${totalPanes - okTally} failed`,
-							} satisfies SubagentCompleteDetails,
-						}, { deliverAs: "steer" });
+					// Debounce steer messages: first completion triggers a turn
+					// immediately; near-simultaneous completions are batched into one
+					// steer (avoids N turns for N near-simultaneous completions).
+					pendingCompletions.push({ t, result, completed, okTally, stuckTally, startMs });
+					if (pendingCompletions.length === 1 && !debounceTimer) {
+						// First completion: flush immediately so orchestrator can act.
+						flushPending();
+						// Start debounce: subsequent completions accumulate.
+						debounceTimer = setTimeout(() => {
+							debounceTimer = null;
+							flushPending();
+						}, FLUSH_DEBOUNCE_MS);
 					}
 
 					persistResult(pi, result, Date.now() - startMs, sids[i]);
