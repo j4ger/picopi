@@ -10,7 +10,7 @@ config file. Ships with an **Ayu Dark**-inspired terminal theme.
 - **Undo** — Rewind conversation and workspace files on double-ESC
 - **Todos** — Branch-aware task list with live widget
 - **Subagents** — Specialist agents (planner, explorer, fixer, auditor, web-searcher) with real-time status and timeout detection
-- **rtk bash** — Bash commands transparently rewritten via [rtk](https://github.com/different-ai/rtk) when available, for token-efficient output
+- **rtk bash** — Bash commands transparently rewritten via [rtk](https://github.com/rtk-ai/rtk) when available, for token-efficient output
 - **Model routing** — Role-based aliases with ordered fallback chains
 
 ## Quickstart
@@ -28,12 +28,14 @@ nix profile install github:j4ger/picopi --accept-flake-config
 **Without Nix** (requires [pi](https://github.com/earendil-works/pi) on PATH):
 
 ```bash
-git clone https://github.com/j4ger/picopi && cd picopi
+git clone https://github.com/j4ger/picopi ~/.local/share/picopi && cd ~/.local/share/picopi
 ./scripts/install.sh
 
-# Optional: install for better web HTML-to-text conversion (turndown)
+# Optional: from the cloned picopi repo, install turndown for better web HTML-to-text conversion
 npm install            # or: bun install / pnpm install
 ```
+
+> **Keep the clone around.** The launcher embeds its absolute path; re-run `./scripts/install.sh` if you move it.
 
 ### Authenticate
 
@@ -219,11 +221,17 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 
 ### rtk bash rewriting
 
-If [rtk](https://github.com/different-ai/rtk) is on PATH, picopi overrides the
+If [rtk](https://github.com/rtk-ai/rtk) is on PATH, picopi overrides the
 built-in `bash` tool: each command is first passed through `rtk rewrite`.
 Handled commands (exit 3) run as their compact `rtk <subcmd>` equivalent;
-unhandled commands (exit 1) run unchanged. Without rtk installed, behavior is
-identical to the built-in bash tool.
+unhandled commands (exit 1) run unchanged.
+
+Install rtk (either method):
+
+- **macOS (Homebrew):** `brew install rtk`
+- **Linux / others:** `curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh`
+
+Without rtk installed, behavior is identical to the built-in bash tool.
 
 The model can pass `raw: true` to bypass rewriting when exact byte output is
 needed (e.g. binary data, parsing-sensitive output). The availability check

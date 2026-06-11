@@ -108,5 +108,5 @@ fi
 echo -e "$H done — run ${B}picopi${X} to start"
 echo -e "  ${D}Optional:${X} run ${B}npm install${X} (or ${B}bun install${X}, ${B}pnpm install${X}) in the repo for better web HTML-to-text conversion (turndown)"
 if ! command -v rtk >/dev/null 2>&1; then
-  echo -e "  ${D}Optional:${X} install ${B}rtk${X} (e.g. ${B}brew install rtk${X} or ${B}curl -fsSL https://rtk.sh/install.sh | sh${X}) for token-efficient bash output — picopi auto-detects it at runtime"
+  echo -e "  ${D}Optional:${X} install ${B}rtk${X} (e.g. ${B}brew install rtk${X} or ${B}curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh${X}) for token-efficient bash output — picopi auto-detects it at runtime"
 fi
