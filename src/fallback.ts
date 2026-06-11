@@ -25,7 +25,7 @@
 import { SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isContextOverflow } from "@earendil-works/pi-ai";
 import { loadConfig, resolveChain, type PicopiConfig } from "./config.ts";
-import { setPicopiFooter } from "./footer.ts";
+import { setPicopiFooter, clearPicopiFooterNote } from "./footer.ts";
 
 let currentModelSpec: string = "";
 let currentAlias: string = "";
@@ -74,7 +74,7 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 	}
 
 	if (!nextSpec) {
-		ctx.ui.notify(`⏱ No more fallback models for "${currentAlias}" — request may fail`, "warning");
+		ctx.ui.notify(`No more fallback models for "${currentAlias}" — request may fail`, "warning");
 		return;
 	}
 
@@ -86,16 +86,17 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 
 	const model = ctx.modelRegistry.find(provider, modelId);
 	if (!model) {
-		ctx.ui.notify(`⏱ Fallback model ${nextSpec} not found in registry`, "error");
+		ctx.ui.notify(`Fallback model ${nextSpec} not found in registry`, "error");
 		return;
 	}
 
 	const success = await pi.setModel(model as any);
 	if (!success) {
-		ctx.ui.notify(`⏱ Failed to switch to ${nextSpec} (no API key?)`, "error");
+		ctx.ui.notify(`Failed to switch to ${nextSpec} (no API key?)`, "error");
 		return;
 	}
 
+	const originalSpec = currentModelSpec;
 	currentModelSpec = nextSpec;
 	errorsForModel = 0;
 	// After a fallback switch, pi doesn't retry internally — each message_end
@@ -103,9 +104,9 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 	// next fallback immediately, allowing the chain to walk through quickly.
 	retryThreshold = 1;
 
-	ctx.ui.notify(`falling back to ${nextSpec}`, "warning");
+	ctx.ui.notify(`Falling back to ${nextSpec} after model error`, "warning");
 
-	setPicopiFooter({ fallbackTo: nextSpec });
+	setPicopiFooter({ fallbackTo: nextSpec, originalModel: originalSpec });
 
 	// pi.setModel() causes pi to retry the pending request with the new model.
 }
@@ -144,6 +145,7 @@ export function setupFallback(pi: ExtensionAPI) {
 	pi.on("model_select", async (event) => {
 		currentModelSpec = `${event.model.provider}/${event.model.id}`;
 		errorsForModel = 0; // fresh retry budget for the new model
+		clearPicopiFooterNote();
 	});
 
 	// ── Load config, track alias, announce the chain ──────────────────────
@@ -171,7 +173,7 @@ export function setupFallback(pi: ExtensionAPI) {
 
 		const chain = resolveChain(cfg, currentAlias);
 		if (chain.length > 1) {
-			ctx.ui.notify(`picopi fallback: ${chain.length} models → ${chain.join(" → ")}`, "info");
+			ctx.ui.notify(`Fallback chain: ${chain.length} models`, "info");
 		}
 	});
 

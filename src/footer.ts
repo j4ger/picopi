@@ -28,6 +28,8 @@ export interface PicopiFooterState {
 	tone?: "warning" | "error";
 	/** Active fallback model spec — shown inline next to model name. */
 	fallbackTo?: string;
+	/** Original model name before fallback switch — shown in the footer. */
+	originalModel?: string;
 }
 
 const state: PicopiFooterState = {};
@@ -150,8 +152,9 @@ export function setupFooter(pi: ExtensionAPI): void {
 						const fb = state.fallbackTo;
 						const fbProvider = fb.includes("/") ? fb.split("/")[0] : "";
 						const fbId = fb.includes("/") ? fb.split("/").pop()! : fb;
-						// Show original model + fallback provider/model, compact.
-						rightPlain = fbProvider ? `${modelName} ⤵ ${fbProvider}/${fbId}` : `${modelName} ⤵ ${fbId}`;
+						const orig = state.originalModel || modelName;
+						// Show original (pre-fallback) model + fallback target, compact.
+						rightPlain = fbProvider ? `${orig} ⤵ ${fbProvider}/${fbId}` : `${orig} ⤵ ${fbId}`;
 						rightColor = "warning";
 					}
 					if (!state.fallbackTo && ctx.model?.reasoning) {
@@ -184,7 +187,8 @@ export function setupFooter(pi: ExtensionAPI): void {
 					// ---- optional warning/note line -----------------------------
 					if (state.note) {
 						const tone = state.tone ?? "warning";
-						lines.push(truncateToWidth(theme.fg(tone, `⬡ ${state.note}`), width, theme.fg(tone, "...")));
+						const prefix = state.tone === "error" ? "✗" : "⚠";
+						lines.push(truncateToWidth(theme.fg(tone, `${prefix} ${state.note}`), width, theme.fg(tone, "...")));
 					}
 
 					// ---- other extensions' statuses (picopi no longer uses one) --

@@ -274,6 +274,8 @@ function isModelError(r: RunResult): boolean {
 
 // Status symbols: running=◌ done=✓ stuck=⚠ failed=✗
 const STATUS_ICON: Record<string, string> = { running: "◌", done: "✓", stuck: "⚠", failed: "✗" };
+// Running is the ordinary active state; use accent/info. Stuck is the anomaly; use warning.
+const STATUS_COLOR: Record<string, string> = { running: "info", done: "success", stuck: "warning", failed: "error" };
 let inspectorOpen = false;
 let subagentsFolded = true;
 
@@ -344,7 +346,7 @@ function updateStatusPanel(context?: any) {
 
 			for (const sub of shown) {
 				const icon = STATUS_ICON[sub.status] ?? "◌";
-				const color = sub.status === "running" ? "warning" : sub.status === "done" ? "success" : sub.status === "stuck" ? "warning" : "error";
+				const color = STATUS_COLOR[sub.status] ?? "error";
 				const elapsed = formatDuration((sub.endTime ?? Date.now()) - sub.startTime);
 
 				if (sub.status === "stuck") {
@@ -897,15 +899,19 @@ export function setupSubagent(pi: ExtensionAPI) {
 					const batch = pendingCompletions.splice(0);
 					const totalPanes = params.tasks!.length;
 					const last = batch[batch.length - 1];
+					const completed = last.completed;
 					const ok = last.okTally;
 					const stuck = last.stuckTally;
 					const start = batch[0].startMs;
+					const isFinal = completed === totalPanes;
 					const agents = [...new Set(batch.map((p) => p.t.agent))];
 					const agentList = agents.join(", ");
-					const summary = stuck > 0 ? `${ok} ok, ${stuck} timeout` : `${ok}/${totalPanes} ok`;
+					const summary = isFinal
+						? (stuck > 0 ? `${ok} ok, ${stuck} timeout` : `${ok}/${totalPanes} ok`)
+						: `${completed}/${totalPanes} done`;
 					const content = batch.length === 1
 						? `${batch[0].t.agent} ${failed(batch[0].result) ? "failed" : "done"}`
-						: `${agentList} done · batch ${summary}`;
+						: `${agentList} done · ${summary}`;
 					pi.sendMessage({
 						customType: "subagent-complete",
 						content,
@@ -916,11 +922,13 @@ export function setupSubagent(pi: ExtensionAPI) {
 								? batch[0].t.task
 								: `${totalPanes} parallel tasks`,
 							reason: batch[0].t.reason ?? params.reason,
-							ok: ok === totalPanes,
+							ok: isFinal && ok === totalPanes,
 							durationMs: Date.now() - start,
-							preview: ok === totalPanes
-								? `All ${totalPanes} tasks completed`
-								: `${totalPanes - ok} failed`,
+							preview: isFinal
+								? (ok === totalPanes
+									? `All ${totalPanes} tasks completed`
+									: `${totalPanes - ok} failed`)
+								: `${completed}/${totalPanes} done`,
 						} satisfies SubagentCompleteDetails,
 					}, { deliverAs: "steer" });
 					// Schedule another flush for completions during orchestrator's turn.

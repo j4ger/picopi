@@ -152,11 +152,10 @@ export function setupUndo(pi: ExtensionAPI) {
 				ctx.ui.notify("No checkpoints yet (need a git repo + at least one turn)", "info");
 				return;
 			}
-			const lines = Array.from(checkpoints.values())
-				.sort((a, b) => a.createdAt - b.createdAt)
-				.map((c) => `${new Date(c.createdAt).toLocaleTimeString()}  ${c.ref.slice(0, 10)}`);
-			ctx.ui.setWidget("picopi-checkpoints", [" picopi checkpoints", ...lines.map((l) => "  " + l)]);
-			ctx.ui.notify(`${checkpoints.size} checkpoint(s) — see widget`, "info");
+			const cps = Array.from(checkpoints.values())
+				.sort((a, b) => a.createdAt - b.createdAt);
+			const lines = cps.map((c, i) => `${i + 1}. ${new Date(c.createdAt).toLocaleTimeString()}  ${c.ref.slice(0, 10)}`);
+			ctx.ui.notify(`${checkpoints.size} checkpoint(s): ${lines.join(" | ")}`, "info");
 		},
 	});
 }

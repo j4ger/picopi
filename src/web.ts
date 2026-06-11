@@ -710,7 +710,10 @@ export function setupWeb(pi: ExtensionAPI) {
 			const d = result.details as { results?: SearchResult[] } | undefined;
 			const total = d?.results?.reduce((a, r) => a + r.hits.length, 0) ?? 0;
 			const prov = d?.results?.[0]?.provider ?? "?";
-			return new Text(theme.fg("success", "✓ ") + theme.fg("muted", `${total} sources via ${prov}`), 0, 0);
+			const isErr = result.isError || total === 0;
+			const icon = isErr ? "✗ " : "✓ ";
+			const color: "error" | "success" = isErr ? "error" : "success";
+			return new Text(theme.fg(color, icon) + theme.fg("muted", `${total} sources via ${prov}`), 0, 0);
 		},
 	});
 
@@ -768,7 +771,10 @@ export function setupWeb(pi: ExtensionAPI) {
 		renderResult(result, _opts, theme) {
 			const t = result.content[0];
 			const text = t?.type === "text" ? t.text : "";
-			return new Text(theme.fg("success", "✓ ") + theme.fg("muted", `${text.length} chars`), 0, 0);
+			const isErr = result.isError || !text;
+			const icon = isErr ? "✗ " : "✓ ";
+			const color: "error" | "success" = isErr ? "error" : "success";
+			return new Text(theme.fg(color, icon) + theme.fg("muted", `${text.length} chars`), 0, 0);
 		},
 	});
 }
