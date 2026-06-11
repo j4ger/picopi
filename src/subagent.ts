@@ -690,7 +690,15 @@ async function runAgent(
 					buf = lines.pop() || "";
 					for (const l of lines) onLine(l);
 				});
-				proc.stderr.on("data", (d) => { base.stderr += d.toString(); });
+				const MAX_STDERR = 50 * 1024;
+				proc.stderr.on("data", (d) => {
+					if (base.stderr.length < MAX_STDERR) {
+						base.stderr += d.toString();
+						if (base.stderr.length > MAX_STDERR) {
+							base.stderr = base.stderr.slice(0, MAX_STDERR) + "\n...[stderr truncated]";
+						}
+					}
+				});
 				// Safety: resolve if the child remains silent well beyond the watchdog
 				// window. This is idle-based, so healthy output/events keep it alive.
 				let resolved = false;
