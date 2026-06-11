@@ -275,7 +275,7 @@ function isModelError(r: RunResult): boolean {
 // Status symbols: running=◌ done=✓ stuck=⚠ failed=✗
 const STATUS_ICON: Record<string, string> = { running: "◌", done: "✓", stuck: "⚠", failed: "✗" };
 // Running is the ordinary active state; use accent/info. Stuck is the anomaly; use warning.
-const STATUS_COLOR: Record<string, string> = { running: "info", done: "success", stuck: "warning", failed: "error" };
+const STATUS_COLOR: Record<string, string> = { running: "accent", done: "success", stuck: "warning", failed: "error" };
 let inspectorOpen = false;
 let subagentsFolded = true;
 
