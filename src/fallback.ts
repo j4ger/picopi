@@ -99,10 +99,10 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 	const originalSpec = currentModelSpec;
 	currentModelSpec = nextSpec;
 	errorsForModel = 0;
-	// After a fallback switch, pi doesn't retry internally — each message_end
-	// is a fresh attempt. Set threshold to 1 so the next error triggers the
-	// next fallback immediately, allowing the chain to walk through quickly.
-	retryThreshold = 1;
+	// Keep the original retry threshold so the fallback model gets the same
+	// number of attempts before the chain walks. pi's internal retry counter
+	// is not reset by setModel, so the current turn ends after the switch;
+	// the next user message or steer gets a full retry budget on the new model.
 
 	ctx.ui.notify(`Falling back to ${nextSpec} after model error`, "warning");
 
@@ -199,9 +199,9 @@ export function setupFallback(pi: ExtensionAPI) {
 		}
 		if (isContextOverflow(m, ctx.model?.contextWindow)) return;
 
-		// Let pi exhaust its own retries on this model first. Switch only on the
-		// last retry-eligible error (>= maxRetries) so pi's final retry continuation
-		// still uses the fallback model this turn. (retry disabled => threshold 0.)
+		// Let pi exhaust its own retries on this model first. Switch after
+		// maxRetries errors; the fallback model inherits the original threshold
+		// so the next turn gets a full retry budget. (retry disabled => threshold 0.)
 		if (++errorsForModel < retryThreshold) return;
 
 		await tryFallback(pi, ctx, loadConfig(), "Upstream error");
