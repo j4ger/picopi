@@ -47,7 +47,6 @@ export function getCurrentModelSpec(): string { return currentModelSpec; }
 export function setCurrentModel(spec: string): void {
 	currentModelSpec = spec;
 	errorsForModel = 0;
-	retryThreshold = 1; // same as after a normal fallback — next error walks further
 }
 
 async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig, reason: string) {

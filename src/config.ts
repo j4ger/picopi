@@ -249,8 +249,6 @@ export function resolveModelChainForSpawn(cfg: PicopiConfig, alias: string): str
 		// Check the model exists in the provider's model list
 		const hasModel = prov.models?.some((m) => m.id === modelId) ?? false;
 		if (!hasModel) continue;
-		// Check the provider has an API key
-		if (!prov.apiKey) continue;
 		result.push(spec);
 	}
 	return result;

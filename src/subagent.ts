@@ -17,7 +17,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn, resolveModelForSpawn } from "./config.ts";
+import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn } from "./config.ts";
 
 // Constants
 
@@ -258,7 +258,7 @@ function isModelError(r: RunResult): boolean {
 	// API error patterns in the error message.
 	if (r.errorMessage) {
 		const msg = r.errorMessage.toLowerCase();
-		if (/overloaded|rate.?limit|too many requests|server error|internal error|503|502|500|timeout|unavailable|capacity/i.test(msg)) return true;
+		if (/\b(?:overloaded|rate.?limit|too many requests|server error|internal error|50[0-9]|timeout|unavailable|capacity|401|403|unauthorized|forbidden|invalid api key|no api key)\b/i.test(msg)) return true;
 	}
 	// Connection / network errors in stderr.
 	if (r.stderr) {
@@ -572,6 +572,7 @@ async function runAgent(
 		// ── Try each model in the chain ──────────────────────────────────
 		let lastResult: RunResult | null = null;
 		for (let attempt = 0; attempt < modelSpecs.length; attempt++) {
+			if (signal?.aborted) break;
 			const spec = modelSpecs[attempt];
 			const args = [...sharedArgs, "--model", spec];
 			if (role?.thinking) args.push("--thinking", role.thinking);
@@ -692,6 +693,7 @@ async function runAgent(
 				});
 				const MAX_STDERR = 50 * 1024;
 				proc.stderr.on("data", (d) => {
+					lastEventTime = Date.now();
 					if (base.stderr.length < MAX_STDERR) {
 						base.stderr += d.toString();
 						if (base.stderr.length > MAX_STDERR) {
@@ -709,6 +711,7 @@ async function runAgent(
 					if (attempt === 0) trackStuck(statusId);
 					killTree("SIGTERM");
 					sigkillTimers.push(setTimeout(() => killTree("SIGKILL"), 4000));
+					cleanup();
 					safeResolve(1);
 				}, WATCHDOG_INTERVAL);
 
@@ -718,6 +721,10 @@ async function runAgent(
 					for (const t of sigkillTimers) clearTimeout(t);
 					sigkillTimers.length = 0;
 					if (signal) signal.removeEventListener("abort", killOnAbort);
+					proc.stdout.removeAllListeners("data");
+					proc.stderr.removeAllListeners("data");
+					proc.removeAllListeners("close");
+					proc.removeAllListeners("error");
 				};
 				proc.on("close", (c) => {
 					cleanup();
