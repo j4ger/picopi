@@ -130,7 +130,7 @@ export function setupRtkBash(pi: ExtensionAPI) {
 		description:
 			(template.description ?? "Execute a shell command") +
 			"\nCommands may be transparently rewritten by rtk into token-efficient equivalents. " +
-			"Set raw: true to bypass rewriting when exact/binary output is required.",
+			"Set raw: true to bypass rewriting.",
 		parameters: RtkBashParams,
 		promptSnippet: template.promptSnippet,
 		promptGuidelines: [

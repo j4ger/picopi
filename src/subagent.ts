@@ -778,9 +778,9 @@ const TaskItem = Type.Object({
 const Params = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task (single mode)" })),
-	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task, reason}" })),
+	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task, reason} (max 6)" })),
 	reason: Type.Optional(Type.String({ description: "Rationale for delegation; used directly in single mode and as fallback for parallel tasks" })),
-	timeout: Type.Optional(Type.Number({ description: `Watchdog timeout in seconds (default: ${DEFAULT_TIMEOUT})` })),
+	timeout: Type.Optional(Type.Number({ description: `Inactivity timeout in seconds; subagent killed if it emits no events for this long (default: ${DEFAULT_TIMEOUT})` })),
 });
 
 // Extension
@@ -826,15 +826,14 @@ export function setupSubagent(pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Delegate to a specialist subagent with an isolated context window.",
-			"Agents: planner, explorer, fixer, auditor, web-searcher (see agents/ dir).",
-			"Models/thinking from central config.json. Modes: single {agent,task}, parallel {tasks}.",
-			"Includes optional reason metadata and watchdog timeout detection for stuck providers.",
+			"Agents: planner, explorer, fixer, auditor, web-searcher.",
+			"Modes: single {agent,task} or parallel {tasks} (max 6).",
 		].join(" "),
 		parameters: Params,
 		promptSnippet: "Delegate to specialist subagents",
 		promptGuidelines: [
-			"Delegate by default: planner=reasoning, explorer=recon, fixer=implementation, auditor=review, web-searcher=research.",
-			"Include a brief reason for /subagents.",
+			"Delegate by default: planner=design/planning, explorer=recon, fixer=implementation, auditor=review, web-searcher=research.",
+			"Include a brief reason (shown in the status panel).",
 			"Fixer tasks: one concrete concern, ~1-3 files; split or plan first if larger.",
 			"Parallel { tasks: [...] } only for independent work.",
 		],
