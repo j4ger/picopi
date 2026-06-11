@@ -162,15 +162,18 @@ export function setupCaption(pi: ExtensionAPI) {
 
 		captionSet = true;
 
-		// Run asynchronously — don't block the agent loop.
-		// The session name pops in after the caption process finishes.
-		const caption = await generateCaption(ctx, firstUserText, assistantText);
-		if (caption) {
-			try {
-				pi.setSessionName(caption);
-			} catch {
-				// Session may have been disposed — silently ignore.
+		// Fire-and-forget — don't block the agent loop since pi awaits
+		// extension handlers. The session name pops in ~1-2s later.
+		generateCaption(ctx, firstUserText, assistantText).then((caption) => {
+			if (caption) {
+				try {
+					pi.setSessionName(caption);
+				} catch {
+					// Session may have been disposed — silently ignore.
+				}
 			}
-		}
+		}).catch(() => {
+			// Caption generation failed — session stays unnamed, no harm.
+		});
 	});
 }
