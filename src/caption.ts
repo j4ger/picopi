@@ -40,13 +40,13 @@ function extractText(msg: any): string {
 
 async function generateCaption(ctx: any, userText: string, assistantText: string): Promise<string | null> {
 	const cfg = loadConfig();
-	const liteModel = cfg.lite?.model;
+	const titleMakerModel = cfg.titleMaker?.model;
 
 	// Resolve model chain for the lite role, or fall back to the
 	// cheapest model in the orchestrator chain.
 	let modelSpecs: string[] = [];
-	if (liteModel) {
-		modelSpecs = resolveModelChainForSpawn(cfg, liteModel);
+	if (titleMakerModel) {
+		modelSpecs = resolveModelChainForSpawn(cfg, titleMakerModel);
 	}
 	if (modelSpecs.length === 0 && cfg.orchestrator?.model) {
 		const orchChain = resolveModelChainForSpawn(cfg, cfg.orchestrator.model);
