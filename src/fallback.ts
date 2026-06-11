@@ -90,13 +90,16 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 		return;
 	}
 
+	// Save the original model BEFORE setModel — pi.setModel triggers
+	// model_select which overwrites currentModelSpec with the new model.
+	const originalSpec = currentModelSpec;
+
 	const success = await pi.setModel(model as any);
 	if (!success) {
 		ctx.ui.notify(`Failed to switch to ${nextSpec} (no API key?)`, "error");
 		return;
 	}
 
-	const originalSpec = currentModelSpec;
 	currentModelSpec = nextSpec;
 	errorsForModel = 0;
 	// Keep the original retry threshold so the fallback model gets the same
