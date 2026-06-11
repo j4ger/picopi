@@ -11,6 +11,7 @@ import { applyOrchestrator, setupOrchestrator } from "./orchestrator.ts";
 import { setCurrentModel, getCurrentAlias, getCurrentModelSpec, findInChain, setupFallback } from "./fallback.ts";
 import { clearPicopiFooterNote, setupFooter } from "./footer.ts";
 import { setupSubagent } from "./subagent.ts";
+import { setupCaption } from "./caption.ts";
 import { setupTodo } from "./todo.ts";
 import { setupUndo } from "./undo.ts";
 import { setupRtkBash } from "./rtk-bash.ts";
@@ -46,6 +47,7 @@ export default function (pi: ExtensionAPI) {
 	setupUndo(pi);
 	setupTodo(pi);
 	setupSubagent(pi);
+	setupCaption(pi);
 	setupWeb(pi);
 	setupRtkBash(pi);
 

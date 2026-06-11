@@ -47,7 +47,7 @@ const SAFE_ENV_PREFIXES = [
 const SAFE_ENV_EXACT = new Set(["HOME", "PATH", "USER", "SHELL", "TERM"]);
 
 let cachedSanitizedEnv: NodeJS.ProcessEnv | null = null;
-function sanitizeEnv(): NodeJS.ProcessEnv {
+export function sanitizeEnv(): NodeJS.ProcessEnv {
 	if (cachedSanitizedEnv) return cachedSanitizedEnv;
 	const env: Record<string, string> = {};
 	for (const [k, v] of Object.entries(process.env)) {
@@ -500,7 +500,7 @@ function discoverAgents(): AgentDef[] {
 
 // Runner
 
-function piInvocation(args: string[]): { command: string; args: string[] } {
+export function piInvocation(args: string[]): { command: string; args: string[] } {
 	const script = process.argv[1];
 	const isBunVirtual = script?.startsWith("/$bunfs/root/");
 	if (script && !isBunVirtual && fs.existsSync(script)) return { command: process.execPath, args: [script, ...args] };

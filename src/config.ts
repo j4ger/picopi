@@ -25,6 +25,7 @@ export interface RoleConfig {
 
 export interface PicopiConfig {
 	orchestrator?: RoleConfig;
+	lite?: RoleConfig;
 	agents?: Record<string, RoleConfig>;
 	aliases?: Record<string, string[]>;
 	compaction?: { model?: string | null };
