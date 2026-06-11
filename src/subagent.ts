@@ -890,31 +890,30 @@ export function setupSubagent(pi: ExtensionAPI) {
 						details: { completed, total: totalPanes },
 					});
 
-					// The last task to finish also carries the batch summary, so we don't
-					// emit a separate (redundant) aggregate completion message/turn.
+					// Only the last completion sends a steer message (triggers one
+					// orchestrator turn). Intermediate completions stream via onUpdate
+					// above and are visible in the /subagents inspector.
 					const isLast = completed === totalPanes;
-					const label = `${t.agent} ${failed(result) ? "failed" : "done"}`;
-					const batchSummary = stuckTally > 0 ? `${okTally} ok, ${stuckTally} timeout` : `${okTally}/${totalPanes} ok`;
-					const details: SubagentCompleteDetails = isLast
-						? {
-							agent: params.tasks!.map((x) => x.agent).join(", "),
-							task: `${totalPanes} parallel tasks`,
-							reason: params.reason,
-							ok: okTally === totalPanes,
-							durationMs: Date.now() - startMs,
-							preview: okTally === totalPanes ? `All ${totalPanes} tasks completed` : `${totalPanes - okTally} failed`,
-						}
-						: {
-							agent: t.agent, task: t.task, reason: t.reason ?? params.reason, ok: !failed(result),
-							model: result.model, durationMs: Date.now() - startMs,
-							preview: outputPreview(output(result)),
-						};
-					pi.sendMessage({
-						customType: "subagent-complete",
-						content: isLast ? `${label} · batch ${batchSummary}` : label,
-						display: true,
-						details,
-					}, { deliverAs: "steer" });
+					if (isLast) {
+						const batchSummary = stuckTally > 0
+							? `${okTally} ok, ${stuckTally} timeout`
+							: `${okTally}/${totalPanes} ok`;
+						pi.sendMessage({
+							customType: "subagent-complete",
+							content: `batch ${batchSummary}`,
+							display: true,
+							details: {
+								agent: params.tasks!.map((x) => x.agent).join(", "),
+								task: `${totalPanes} parallel tasks`,
+								reason: params.reason,
+								ok: okTally === totalPanes,
+								durationMs: Date.now() - startMs,
+								preview: okTally === totalPanes
+									? `All ${totalPanes} tasks completed`
+									: `${totalPanes - okTally} failed`,
+							} satisfies SubagentCompleteDetails,
+						}, { deliverAs: "steer" });
+					}
 
 					persistResult(pi, result, Date.now() - startMs, sids[i]);
 					return result;
