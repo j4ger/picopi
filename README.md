@@ -1,31 +1,27 @@
-# picopi
+# pico-pi
 
-An opinionated [pi](https://github.com/earendil-works/pi) setup with web
-search, undo, todos, subagents, and role-based model routing — all from one
-config file. Ships with an **Ayu Dark**-inspired terminal theme.
+An opinionated [pi](https://github.com/earendil-works/pi) setup with web search, undo, todos, subagent presets, and role-based model routing.
 
 ## Features
 
 - **Web search + fetch** — DuckDuckGo by default, optional Exa / Perplexity / Brave
 - **Undo** — Rewind conversation and workspace files on double-ESC
-- **Todos** — Branch-aware task list with live widget
-- **Subagents** — Specialist agents (planner, explorer, fixer, auditor, web-searcher) with real-time status and timeout detection
-- **rtk bash** — Bash commands transparently rewritten via [rtk](https://github.com/rtk-ai/rtk) when available, for token-efficient output
+- **Todos** — Visual task list with live widget
+- **Subagents** — Specialist agents (planner, explorer, fixer, auditor, web-searcher) with live widget, inspection tool and parallel spawning
+- **rtk bash** — Bash commands transparently rewritten via [rtk](https://github.com/rtk-ai/rtk) when available, to reduce token usage
 - **Model routing** — Role-based aliases with ordered fallback chains
 
 ## Quickstart
 
 ### Install
 
-**Nix** (recommended):
+Nix:
 
 ```bash
-nix run github:j4ger/picopi --accept-flake-config
-# or install permanently:
-nix profile install github:j4ger/picopi --accept-flake-config
+nix run github:j4ger/picopi
 ```
 
-**Without Nix** (requires [pi](https://github.com/earendil-works/pi) on PATH):
+Without Nix (requires [pi](https://github.com/earendil-works/pi) on PATH):
 
 ```bash
 git clone https://github.com/j4ger/picopi ~/.local/share/picopi && cd ~/.local/share/picopi
@@ -33,6 +29,9 @@ git clone https://github.com/j4ger/picopi ~/.local/share/picopi && cd ~/.local/s
 
 # Optional: from the cloned picopi repo, install turndown for better web HTML-to-text conversion
 npm install            # or: bun install / pnpm install
+
+# Optional: install rtk for better token efficiency
+curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 ```
 
 > **Keep the clone around.** The launcher embeds its absolute path; re-run `./scripts/install.sh` if you move it.
@@ -42,16 +41,14 @@ npm install            # or: bun install / pnpm install
 picopi uses pi's auth. Launch it and log in to a provider:
 
 ```bash
-picopi          # or: nix run github:j4ger/picopi --accept-flake-config
+picopi
 ```
 
-Inside picopi, run `/login` and pick your provider (OAuth or API key). Built-in
-providers (Anthropic, Google, OpenAI, …) work with just a login — no
-`models.json` needed. See [pi's provider docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) for env-var keys and OAuth details.
+Inside picopi, run `/login` and pick your provider (OAuth or API key). See [pi's provider docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) for details.
 
 ### Configure
 
-The installer seeds a full `~/.config/picopi/config.json` — **edit it in place**.
+The installer seeds a full `~/.config/picopi/config.json`.
 It ships with `pro` and `flash` aliases pointing at sensible defaults:
 
 ```jsonc
@@ -63,8 +60,7 @@ It ships with `pro` and `flash` aliases pointing at sensible defaults:
 }
 ```
 
-Point these at models you can actually use (first entry with a working key
-wins). Then run `/picopi` to verify every role resolves.
+You can run `/picopi` to verify every role resolves.
 
 ---
 
@@ -89,10 +85,7 @@ wins). Then run `/picopi` to verify every role resolves.
 ## Subagents
 
 Delegate scoped work to specialist agents so the main context stays focused.
-The orchestrator runs on a small/cheap model and **coordinates**: it delegates
-heavy reasoning to `planner`, splits the plan into small fixer-sized tasks, and
-runs independent `fixer`s in parallel. This keeps cost down and avoids handing
-the small `fixer` model tasks too big to finish before its timeout.
+The orchestrator runs on a small/cheap model and **coordinates**: it delegates heavy reasoning to `planner`, splits the plan into small fixer-sized tasks, and runs independent `fixer`s in parallel. This keeps cost down and avoids handing the small `fixer` model tasks too big to finish before its timeout.
 
 | Agent | Purpose |
 |-------|---------|
@@ -102,30 +95,9 @@ the small `fixer` model tasks too big to finish before its timeout.
 | **auditor** | Code review and bug hunting |
 | **web-searcher** | Research and synthesis |
 
-**Usage:**
+Run `/subagents` to open a live TUI panel that shows running and completed subagents. Navigate with arrow keys, press Enter to expand a subagent's transcript, and press q to quit. Press v to through verbosity levels.
 
-```
-Use explorer to find all auth code
-Run explorer and auditor in parallel on the auth module
-Have planner create a plan, then fixer implements it
-```
-
-**Inspector:** Run `/subagents` to open a live TUI panel that shows running and
-completed subagents. Navigate with arrow keys, press Enter to expand a
-subagent's transcript, and press `q` to quit. The inspector has three verbosity
-levels (cycle with `v`):
-
-| Level | What's shown |
-|-------|-------------|
-| **minimal** | Tool calls/results only, plus live streaming text with `▌` cursor |
-| **normal** (default) | Adds a compact preview of each assistant turn |
-| **verbose** | Full assistant text for every turn |
-
-Running subagents show their current streaming output in real-time at the bottom
-of the expanded view. Delegations may include an optional `reason`, which is
-shown in completion messages and the inspector.
-
-**Config:**
+Config:
 
 ```jsonc
 {
@@ -185,16 +157,9 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
 
 ### Runtime fallback
 
-When the orchestrator's model errors out (timeout, overload, rate limit, 5xx,
-auth, …), picopi switches to the next model in the alias chain so pi's own
-retry picks up the fallback model. Context-overflow errors are left to pi's
-compaction instead. Disable with `PI_FALLBACK_DISABLE=true`.
+When the orchestrator's model errors out (timeout, overload, rate limit, 5xx, auth, …), picopi switches to the next model in the alias chain so pi's own retry picks up the fallback model. Context-overflow errors are left to pi's compaction instead. Disable with `PI_FALLBACK_DISABLE=true`.
 
-**Limitation:** fallback only fires while pi is retrying. Non-retryable errors
-(auth, content-policy, model-not-found) and `retry.maxRetries: 0` stop the turn
-immediately — the model is switched for the *next* turn, but the failed turn is
-not re-run automatically. Re-send your prompt to retry on the fallback model.
-The chain is also walked at most `retry.maxRetries + 1` models per turn.
+**Limitation:** fallback only fires while pi is retrying. Non-retryable errors (auth, content-policy, model-not-found) and `retry.maxRetries: 0` stop the turn immediately — the model is switched for the *next* turn, but the failed turn is not re-run automatically. Re-send your prompt to retry on the fallback model. The chain is also walked at most `retry.maxRetries + 1` models per turn.
 
 ### Presets
 
@@ -219,25 +184,6 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 - The last-used preset is tracked **per workspace** and **persists across restarts and session resumes** (stored in `~/.config/picopi/state.json`, keyed by directory).
 - If an `@preset` variant is missing for an alias, the base alias is used as a fallback, so partial presets are safe.
 
-### rtk bash rewriting
-
-If [rtk](https://github.com/rtk-ai/rtk) is on PATH, picopi overrides the
-built-in `bash` tool: each command is first passed through `rtk rewrite`.
-Handled commands (exit 3) run as their compact `rtk <subcmd>` equivalent;
-unhandled commands (exit 1) run unchanged.
-
-Install rtk (either method):
-
-- **macOS (Homebrew):** `brew install rtk`
-- **Linux / others:** `curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh`
-
-Without rtk installed, behavior is identical to the built-in bash tool.
-
-The model can pass `raw: true` to bypass rewriting when exact byte output is
-needed (e.g. binary data, parsing-sensitive output). The availability check
-(`command -v rtk`) is cached once per session; the rewrite probe is capped at 2
-seconds and falls back to the original command on any error.
-
 ### Web search providers
 
 | Provider | Key | Notes |
@@ -250,11 +196,9 @@ seconds and falls back to the original command on any error.
 
 ### Custom models / gateways
 
-Built-in providers (Anthropic, Google, OpenAI, …) need only `/login`. Use
-`models.json` **only** for custom providers or gateways: declare them in
-`~/.config/picopi/models.json`, then reference as `provider/model` in aliases.
-See
-[pi's models docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md).
+Built-in providers (Anthropic, Google, OpenAI, …) need only `/login`. Use `models.json` **only** for custom providers or gateways: declare them in `~/.config/picopi/models.json`, then reference as `provider/model` in aliases.
+
+See [pi's models docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md).
 
 ### Nix flake
 
@@ -285,29 +229,9 @@ flake.nix
 
 ---
 
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| `Unknown agent` | Check agent name matches a `.md` in `agents/` |
-| Subagent timeout | Increase `timeout` or check provider status |
-| `No API key` | Run `/login` or set env var |
-| Model not found | Run `/picopi` to check resolved aliases |
-| Stale config | Hot-reloaded; run `/picopi` to verify |
-
----
-
 ## Updating
 
-**Nix:** `nix profile upgrade picopi` or `nix run --refresh`
+Nix: Update flake input.
 
-**Non-Nix:** `picopi --update` — pulls the latest picopi, regenerates the
-launcher, and runs `pi update pi`. Use `picopi --update --no-pi` to update picopi
-only (if you manage pi yourself). Requires a clean repo checkout (commit/stash
-local changes first).
+Non-Nix: `picopi --update` — pulls the latest picopi, regenerates the launcher, and runs `pi update pi`. Use `picopi --update --no-pi` to update picopi only (if you manage pi yourself).
 
-picopi warns at startup if the installed pi is older than it needs; run
-`picopi --update` to catch up.
-
-Config files are seeded once and never overwritten. Merge new defaults manually
-if needed.
