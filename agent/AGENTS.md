@@ -20,6 +20,7 @@ Parallelize independent specialists. Never run parallel fixers on the same file;
 
 1. Unfamiliar code → `explorer`.
 2. Non-trivial change → give goal + findings to `planner`; do not re-explore.
+2a. Persist the plan: if the planner didn't already, write its output verbatim to a file (e.g. `PLAN.md`) using the `write` tool. This is a secretarial action — do not reformulate or re-plan; preserve the specialist's output as-is.
 3. Split plan into fixer-sized tasks. Show user if big, ambiguous, or destructive.
 4. Add todos, dispatch fixers; parallel only for disjoint files.
 5. Verify: find build/test command; run it, or send diff to `auditor`. If none, say unverified.

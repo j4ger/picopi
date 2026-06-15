@@ -63,7 +63,7 @@ export function sanitizeEnv(): NodeJS.ProcessEnv {
 
 // Tool defaults per agent role (config.json > markdown > these)
 const BUILT_IN_DEFAULTS: Record<string, string[]> = {
-	planner: ["read", "grep", "find", "ls"],
+	planner: ["read", "grep", "find", "ls", "write"],
 	explorer: ["read", "grep", "find", "ls", "bash"],
 	fixer: ["read", "write", "edit", "bash"],
 	auditor: ["read", "grep", "find", "ls", "bash"],
