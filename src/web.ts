@@ -55,6 +55,7 @@ async function readCapped(res: Response): Promise<string> {
 }
 
 async function validateUrl(urlStr: string): Promise<URL> {
+	if (urlStr.length > 8192) throw new Error("URL exceeds maximum allowed length");
 	const parsed = new URL(urlStr);
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
 		throw new Error(`URL protocol must be http or https, got ${parsed.protocol}`);
@@ -105,6 +106,10 @@ function unsafeIPv6(ip: string): void {
 	const n = ip.toLowerCase().replace(/%[a-z0-9]+$/i, "");
 	if (n === "::" || n === "0:0:0:0:0:0:0:0") throw new Error(`URL resolves to unspecified address (::): ${ip}`);
 	if (n === "::1" || n === "0:0:0:0:0:0:0:1") throw new Error(`URL resolves to loopback address (::1): ${ip}`);
+	// NAT64 (64:ff9b::/96) — maps IPv4 into IPv6; could reach private IPv4 via NAT
+	if (n.startsWith("64:ff9b:") || n === "64:ff9b::") throw new Error(`URL resolves to NAT64 address (64:ff9b::/96): ${ip}`);
+	// Teredo (2001::/32) — tunnels IPv4 UDP; first group 0x2001, second group 0x0000
+	if (/^2001:0{0,4}:/.test(n) || n === "2001::" || n === "2001:0::") throw new Error(`URL resolves to Teredo address (2001::/32): ${ip}`);
 	const first = parseInt(n.split(":")[0] || "0", 16);
 	if ((first & 0xfe00) === 0xfc00) throw new Error(`URL resolves to unique-local address (fc00::/7): ${ip}`);
 	if ((first & 0xffc0) === 0xfe80) throw new Error(`URL resolves to link-local address (fe80::/10): ${ip}`);
@@ -114,13 +119,20 @@ function unsafeIPv6(ip: string): void {
 }
 
 function ipv4FromMappedIPv6(ip: string): string | undefined {
+	// ::ffff:a.b.c.d  (IPv4-mapped, dotted-decimal)
 	const dotted = /^::ffff:(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip);
 	if (dotted) return `${dotted[1]}.${dotted[2]}.${dotted[3]}.${dotted[4]}`;
+	// ::ffff:hhhh:hhhh  (IPv4-mapped, hex)
 	const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
-	if (!hex) return undefined;
-	const hi = parseInt(hex[1], 16);
-	const lo = parseInt(hex[2], 16);
-	return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+	if (hex) {
+		const hi = parseInt(hex[1], 16);
+		const lo = parseInt(hex[2], 16);
+		return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+	}
+	// ::a.b.c.d  (IPv4-compatible, deprecated but still parseable — SSRF bypass)
+	const compat = /^::(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+	if (compat) return compat[1];
+	return undefined;
 }
 
 /**
@@ -239,8 +251,12 @@ async function nodeFetch(targetUrl: URL, init: NodeFetchInit): Promise<Response>
 		};
 
 		if (agent) {
-			// When a proxy is active, DNS-rebinding SSRF protection is bypassed;
-			// only hostname-level checks in validateUrl apply.
+			// SSRF limitation: when a proxy is active the custom DNS lookup (createLookup)
+			// is bypassed, so per-IP DNS-rebinding protection does not apply. Only the
+			// hostname-level checks in validateUrl are enforced. This is an inherent
+			// constraint of proxy routing — the proxy resolves DNS, not this process.
+			// Mitigation: validateUrl still blocks known-private hostnames and IP literals.
+			// If you need full per-IP SSRF protection, do not configure a proxy.
 			options.agent = agent;
 		} else {
 			options.lookup = createLookup(hostname);

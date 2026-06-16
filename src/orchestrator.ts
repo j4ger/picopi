@@ -43,7 +43,7 @@ export interface ApplyOrchestratorResult {
 export async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiConfig): Promise<ApplyOrchestratorResult> {
 	const role = cfg.orchestrator;
 	if (!role) {
-		setReadyStatus(ctx);
+		setReadyStatus();
 		return { ok: true };
 	}
 
@@ -54,7 +54,7 @@ export async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext,
 		return { ok: false, detail: `no working model for "${role.model}"` };
 	}
 
-	const ok = await pi.setModel(resolved.model as any);
+	const ok = await pi.setModel(resolved.model as object);
 	if (!ok) {
 		setPicopiFooter({ role: role.model, note: `auth failed for ${resolved.spec} — run /login`, tone: "warning" });
 		return { ok: false, detail: `auth failed for ${resolved.spec}` };
@@ -67,7 +67,7 @@ export async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext,
 	return { ok: true, detail: resolved.spec };
 }
 
-function setReadyStatus(_ctx: ExtensionContext) {
+function setReadyStatus() {
 	setPicopiFooter({ role: undefined });
 	clearPicopiFooterNote();
 }
@@ -105,7 +105,7 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 			}
 			await applyOrchestrator(pi, ctx, cfg);
 		} else {
-			setReadyStatus(ctx);
+			setReadyStatus();
 		}
 	});
 
@@ -139,7 +139,7 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 
 		try {
 			const response = await complete(
-				resolved.model as any,
+				resolved.model as object,
 				{
 					messages: [
 						{
@@ -170,7 +170,8 @@ ${conversationText}
 
 			if (!summary.trim()) return;
 			return { compaction: { summary, firstKeptEntryId, tokensBefore } };
-		} catch {
+		} catch (e) {
+			console.warn(`picopi: custom compaction failed, using default (${e instanceof Error ? e.message : e})`);
 			return; // default compaction
 		} finally {
 			clearTimeout(timer);

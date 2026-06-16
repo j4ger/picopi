@@ -150,8 +150,9 @@ export function setupFooter(pi: ExtensionAPI): void {
 					let rightColor: "dim" | "warning" = "dim";
 					if (state.fallbackTo) {
 						const fb = state.fallbackTo;
-						const fbProvider = fb.includes("/") ? fb.split("/")[0] : "";
-						const fbId = fb.includes("/") ? fb.split("/").pop()! : fb;
+						const slashIdx = fb.lastIndexOf("/");
+						const fbProvider = slashIdx > 0 ? fb.slice(0, slashIdx) : "";
+						const fbId = slashIdx > 0 ? fb.slice(slashIdx + 1) : fb;
 						const orig = state.originalModel || modelName;
 						// Show original (pre-fallback) model + fallback target, compact.
 						rightPlain = fbProvider ? `${orig} ⤵ ${fbProvider}/${fbId}` : `${orig} ⤵ ${fbId}`;

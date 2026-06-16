@@ -77,6 +77,13 @@ async function generateCaption(ctx: any, userText: string, assistantText: string
 			let buf = "";
 			let caption = "";
 
+			// Bound the caption subprocess — if it hangs, don't leak it forever.
+			const killTimer = setTimeout(() => {
+				proc.kill("SIGTERM");
+				setTimeout(() => proc.kill("SIGKILL"), 2000);
+				resolve("");
+			}, 30_000);
+
 			proc.stdout.on("data", (d: Buffer) => {
 				buf += d.toString();
 				const lines = buf.split("\n");
@@ -99,6 +106,7 @@ async function generateCaption(ctx: any, userText: string, assistantText: string
 			});
 
 			proc.on("close", () => {
+				clearTimeout(killTimer);
 				// Flush remaining buffer
 				if (buf.trim()) {
 					try {
@@ -118,7 +126,10 @@ async function generateCaption(ctx: any, userText: string, assistantText: string
 				resolve(caption);
 			});
 
-			proc.on("error", () => resolve(""));
+			proc.on("error", () => {
+				clearTimeout(killTimer);
+				resolve("");
+			});
 		});
 
 		if (!text) return null;

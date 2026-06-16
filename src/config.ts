@@ -168,8 +168,8 @@ export function resolveChain(cfg: PicopiConfig, alias: string): string[] {
 }
 
 export interface ModelRegistryLike {
-	find(provider: string, id: string): unknown;
-	getApiKeyAndHeaders(model: unknown): Promise<{ ok: boolean; apiKey?: string; headers?: Record<string, string> }>;
+	find(provider: string, id: string): object | undefined;
+	getApiKeyAndHeaders(model: object): Promise<{ ok: boolean; apiKey?: string; headers?: Record<string, string> }>;
 }
 
 /** First model in the role's chain that exists and has working auth, else null. */
@@ -177,7 +177,7 @@ export async function resolveRoleModel(
 	registry: ModelRegistryLike,
 	cfg: PicopiConfig,
 	alias: string,
-): Promise<{ model: unknown; spec: string } | null> {
+): Promise<{ model: object; spec: string } | null> {
 	for (const spec of resolveChain(cfg, alias)) {
 		const slash = spec.indexOf("/");
 		if (slash <= 0) continue;

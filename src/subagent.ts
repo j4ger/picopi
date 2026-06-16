@@ -804,7 +804,7 @@ const Params = Type.Object({
 
 export function setupSubagent(pi: ExtensionAPI) {
 	// Lightweight elapsed-time updater while subagents are live
-	const _liveTimer = setInterval(() => {
+	const liveTimer = setInterval(() => {
 		if (!extensionCtx || activeSubagents.size === 0 || inspectorOpen) return;
 		const hasLive = [...activeSubagents.values()].some(s => s.status === "running" || s.status === "stuck");
 		if (hasLive) updateStatusPanel(extensionCtx);
@@ -816,7 +816,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 		activeSubagents.clear();
 		for (const timer of cleanupTimers.values()) clearTimeout(timer);
 		cleanupTimers.clear();
-		clearInterval(_liveTimer);
+		clearInterval(liveTimer);
 		if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
 	});
 

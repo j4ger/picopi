@@ -79,7 +79,10 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 
 	// Resolve and switch to the fallback model.
 	const slash = nextSpec.indexOf("/");
-	if (slash <= 0) return;
+	if (slash <= 0) {
+		ctx.ui.notify(`Fallback: model spec "${nextSpec}" is malformed (expected provider/model) — skipping`, "warning");
+		return;
+	}
 	const provider = nextSpec.slice(0, slash);
 	const modelId = nextSpec.slice(slash + 1);
 
@@ -93,14 +96,12 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 	// model_select which overwrites currentModelSpec with the new model.
 	const originalSpec = currentModelSpec;
 
-	const success = await pi.setModel(model as any);
+	const success = await pi.setModel(model as object);
 	if (!success) {
 		ctx.ui.notify(`Failed to switch to ${nextSpec} (no API key?)`, "error");
 		return;
 	}
 
-	currentModelSpec = nextSpec;
-	errorsForModel = 0;
 	// Keep the original retry threshold so the fallback model gets the same
 	// number of attempts before the chain walks. pi's internal retry counter
 	// is not reset by setModel, so the current turn ends after the switch;
