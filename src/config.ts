@@ -32,6 +32,13 @@ export interface PicopiConfig {
 	webSearch?: { provider?: string | null; searchModel?: string | null; summaryModel?: string | null };
 	/** Max concurrent subagent processes in parallel mode (default: 3). */
 	concurrency?: number;
+	/** Cleanup of stale session artifacts (undo backup refs, etc.). */
+	cleanup?: CleanupConfig;
+}
+
+export interface CleanupConfig {
+	/** Delete undo backup refs older than this many days (default: 30, 0 = never). */
+	checkpointMaxAgeDays?: number;
 }
 
 /** The single config file path: <agentDir>/config.json (~/.config/picopi by

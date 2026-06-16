@@ -19,6 +19,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { loadConfig } from "./config.ts";
 
 const CHECKPOINT_TYPE = "picopi-checkpoint";
 
@@ -72,13 +73,34 @@ export function setupUndo(pi: ExtensionAPI) {
 		pi.appendEntry(CHECKPOINT_TYPE, cp);
 	}
 
+	/** On startup, delete undo backup refs older than checkpointMaxAgeDays. */
+	async function cleanupOldBackups() {
+		if (!(await inGitRepo())) return;
+		const { stdout } = await pi.exec("git", ["for-each-ref", "--format=%(refname)", "refs/picopi/undo-backup/"]);
+		const refs = stdout.trim().split("\n").filter(Boolean);
+		if (refs.length === 0) return;
+		const raw = loadConfig();
+		const maxAgeDays = raw.cleanup?.checkpointMaxAgeDays ?? 30;
+		if (maxAgeDays <= 0) return;
+		const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+		let removed = 0;
+		for (const ref of refs) {
+			const ts = Number(ref.split("/").pop() ?? "0");
+			if (ts > 0 && ts < cutoff) {
+				await pi.exec("git", ["update-ref", "-d", ref]);
+				removed++;
+			}
+		}
+		if (removed > 0) console.warn(`picopi: cleaned up ${removed} old undo backup ref(s)`);
+	}
+
 	async function restore(ref: string): Promise<boolean> {
 		if (!(await inGitRepo())) return false;
 		// Faithful restore of TRACKED files to the snapshot:
 		//  1. overwrite tracked files (and re-create tracked files deleted since)
 		//     with the snapshot's content;
 		//  2. remove files that became tracked AFTER the snapshot, so the tree
-		//     matches the checkpoint. Those are recoverable from a git ref
+		//     matches the checkpoint. Those are recoverable from backup refs
 		//     (refs/picopi/undo-backup/*), so this is safe.
 		// Untracked files are intentionally left untouched (never auto-deleted).
 		//
@@ -87,16 +109,23 @@ export function setupUndo(pi: ExtensionAPI) {
 		const snapFiles = new Set(gitFileList((await pi.exec("git", ["ls-tree", "-r", "--name-only", ref])).stdout));
 		const { code } = await pi.exec("git", ["checkout", ref, "--", "."]);
 		if (code !== 0) return false;
-		const added = gitFileList((await pi.exec("git", ["ls-files"])).stdout).filter((f) => !snapFiles.has(f));
-		if (added.length) await pi.exec("git", ["rm", "-f", "--", ...added]);
+		// Only do destructive cleanup (git rm) when we have a backup to recover
+		// from.  When the tree was clean, no backup is needed and no data is at
+		// risk.  When backup creation failed (empty tree while dirty), skip the
+		// rm to avoid permanent loss of tracked-but-since-checkpoint files.
 		if (backup) {
+			const added = gitFileList((await pi.exec("git", ["ls-files"])).stdout).filter((f) => !snapFiles.has(f));
+			if (added.length) await pi.exec("git", ["rm", "-f", "--", ...added]);
 			await pi.exec("git", ["update-ref", `refs/picopi/undo-backup/${Date.now()}`, backup]);
 			pi.appendEntry(CHECKPOINT_TYPE, { entryId: `backup-${Date.now()}`, ref: backup, createdAt: Date.now() });
 		}
 		return true;
 	}
 
-	pi.on("session_start", async (_e, ctx) => rebuild(ctx));
+	pi.on("session_start", async (event, ctx) => {
+		rebuild(ctx);
+		if (event.reason === "startup") await cleanupOldBackups();
+	});
 	pi.on("session_tree", async (_e, ctx) => rebuild(ctx));
 
 	// At turn start the leaf is the user message just submitted; snapshot the
@@ -112,7 +141,10 @@ export function setupUndo(pi: ExtensionAPI) {
 	pi.on("session_before_fork", async (event, ctx) => {
 		if (!ctx.hasUI) return;
 		const cp = checkpoints.get(event.entryId);
-		if (!cp) return;
+		if (!cp) {
+			ctx.ui.notify("No workspace checkpoint for this point — conversation only", "info");
+			return;
+		}
 		const choice = await ctx.ui.select("picopi undo — restore tracked files too?", [
 			"Yes — restore conversation + tracked files (untracked files kept)",
 			"No — rewind conversation only",
@@ -138,6 +170,10 @@ export function setupUndo(pi: ExtensionAPI) {
 				ctx.ui.notify("Nothing to undo", "warning");
 				return;
 			}
+			// Warn before forking if there's no checkpoint for file restore.
+			if (!checkpoints.has(target.id)) {
+				ctx.ui.notify("No workspace checkpoint for this turn — file restore won't be available", "info");
+			}
 			const result = await ctx.fork(target.id, { position: "before" });
 			if (result.cancelled) return;
 		},
@@ -154,7 +190,7 @@ export function setupUndo(pi: ExtensionAPI) {
 			}
 			const cps = Array.from(checkpoints.values())
 				.sort((a, b) => a.createdAt - b.createdAt);
-			const lines = cps.map((c, i) => `${i + 1}. ${new Date(c.createdAt).toLocaleTimeString()}  ${c.ref.slice(0, 10)}`);
+			const lines = cps.map((c, i) => `${i + 1}. ${new Date(c.createdAt).toISOString().slice(0, 19).replace("T", " ")}  ${c.ref.slice(0, 10)}`);
 			ctx.ui.notify(`${checkpoints.size} checkpoint(s): ${lines.join(" | ")}`, "info");
 		},
 	});
