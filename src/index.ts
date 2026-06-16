@@ -28,7 +28,8 @@ function showBoxedOverlay(ctx: ExtensionCommandContext, lines: string[]): Promis
 			for (const raw of lines) {
 				const inner = truncateToWidth(raw, innerW);
 				const pad = innerW - visibleWidth(inner);
-				out.push(border("│") + inner + " ".repeat(Math.max(0, pad)) + border("│"));
+				const padded = inner + " ".repeat(Math.max(0, pad));
+				out.push(border("│") + theme.bg("customMessageBg", padded) + border("│"));
 			}
 			out.push(border("└" + hr + "┘"));
 			return out;

@@ -314,14 +314,16 @@ function updateStatusPanel(context?: any) {
 				let line = theme.fg("muted", "▸ subagents");
 				if (parts.length > 0) line += theme.fg("dim", " ") + parts.join(theme.fg("dim", " "));
 
-				// Top running agent with elapsed and progress
-				const running = all.filter(s => s.status === "running");
-				if (running.length > 0) {
-					const top = running.reduce((a, b) => a.startTime < b.startTime ? a : b);
-					const elapsed = formatDuration(Date.now() - top.startTime);
-					line += theme.fg("dim", " │ ") + theme.fg("warning", truncateToWidth(top.agent, 12, "")) + theme.fg("dim", ` ${elapsed}`);
-					if (top.progress || top.currentTool) {
-						line += theme.fg("dim", ` · ${truncateToWidth(top.progress || top.currentTool!, 16, "…")}`);
+				// Most urgent agent: stuck > failed > running
+				const urgent = all.find(s => s.status === "stuck")
+					|| all.find(s => s.status === "failed")
+					|| all.find(s => s.status === "running");
+				if (urgent) {
+					const elapsed = formatDuration(Date.now() - urgent.startTime);
+					const color = STATUS_COLOR[urgent.status];
+					line += theme.fg("dim", " │ ") + theme.fg(color, truncateToWidth(urgent.agent, 12, "")) + theme.fg("dim", ` ${elapsed}`);
+					if (urgent.progress || urgent.currentTool) {
+						line += theme.fg("dim", ` · ${truncateToWidth(urgent.progress || urgent.currentTool!, 16, "…")}`);
 					}
 				}
 
@@ -365,7 +367,8 @@ function updateStatusPanel(context?: any) {
 				lines.push(theme.fg("dim", "  +" + remaining + " more"));
 			}
 
-			return lines.map(clip);
+			const bgLine = (text: string) => theme.bg("customMessageBg", clip(text));
+			return lines.map(bgLine);
 		},
 	}));
 }
@@ -1181,11 +1184,12 @@ export function setupSubagent(pi: ExtensionAPI) {
 							: it.ok ? theme.fg("success", "✓")
 								: theme.fg("error", "✗");
 
-				const transcriptLines = (it: InspectItem, innerW: number): string[] => {
-					const lines: string[] = [];
+				interface TranscriptLine { text: string; bg?: string; }
+				const transcriptLines = (it: InspectItem, innerW: number): TranscriptLine[] => {
+					const lines: TranscriptLine[] = [];
 					const truncate = (s: string, maxW: number) => truncateToWidth(s, Math.max(1, maxW), "…");
-					const wrap = (s: string, indent: string) => {
-						for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push(indent + w);
+					const wrap = (s: string, indent: string, bg?: string) => {
+						for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push({ text: indent + w, bg });
 					};
 					if (it.transcript && it.transcript.length) {
 						for (const e of it.transcript) {
@@ -1201,46 +1205,46 @@ export function setupSubagent(pi: ExtensionAPI) {
 							} else if (e.kind === "tool-call") {
 								const arg = primaryArg(e.toolName, e.args);
 								const summary = arg ? `${e.toolName ?? e.text} ${arg}` : (e.toolName ?? e.text);
-								lines.push(theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`));
+								lines.push({ text: theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`), bg: "toolPendingBg" });
 							} else if (e.kind === "tool-done") {
 								const arg = primaryArg(e.toolName, e.args);
 								const status = summarizeResult(e.toolName, e.result);
 								const summary = arg ? `${e.toolName ?? e.text} ${arg} — ${status}` : `${e.toolName ?? e.text} — ${status}`;
 								if (e.isError) {
-									lines.push(theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`));
+									lines.push({ text: theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`), bg: "toolErrorBg" });
 									if (e.result != null) {
 										const preview = typeof e.result === "string" ? e.result : JSON.stringify(e.result);
 										for (const line of preview.split("\n").slice(0, 6)) {
-											lines.push(theme.fg("error", `  ${truncate(line, innerW - 4)}`));
+											lines.push({ text: theme.fg("error", `  ${truncate(line, innerW - 4)}`), bg: "toolErrorBg" });
 										}
 									}
 								} else {
-									lines.push(theme.fg("success", `• ${truncate(summary, innerW - 2)}`));
+									lines.push({ text: theme.fg("success", `• ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
 								}
 							}
 						}
 						if (lines.length === 0) {
-							lines.push(theme.fg("dim", "  (assistant output hidden — press v)"));
+							lines.push({ text: theme.fg("dim", "  (assistant output hidden — press v)") });
 						}
 					} else if (it.output) {
 						if (verbosity >= 1) wrap(theme.fg("text", it.output), "  ");
-						else lines.push(theme.fg("dim", "  (output available, press v to show)"));
+						else lines.push({ text: theme.fg("dim", "  (output available, press v to show)") });
 					} else {
-						lines.push(theme.fg("dim", "  (no transcript recorded)"));
+						lines.push({ text: theme.fg("dim", "  (no transcript recorded)") });
 					}
 					// Show streaming text for running agents
 					if (it.streamingText && it.isStreaming) {
-						lines.push("");
-						lines.push(theme.fg("accent", "  streaming:"));
+						lines.push({ text: "" });
+						lines.push({ text: theme.fg("accent", "  streaming:") });
 						const streamLines = it.streamingText.split("\n");
 						const lastLines = streamLines.slice(-5);
 						for (let i = 0; i < lastLines.length; i++) {
 							const cursor = i === lastLines.length - 1 ? "▌" : "";
-							lines.push(theme.fg("text", `  ${truncate(lastLines[i], innerW - 4)}${cursor}`));
+							lines.push({ text: theme.fg("text", `  ${truncate(lastLines[i], innerW - 4)}${cursor}`) });
 						}
 					}
 					if (it.errorMessage) {
-						lines.push("");
+						lines.push({ text: "" });
 						wrap(theme.fg("error", `Error: ${it.errorMessage}`), "  ");
 					}
 					return lines;
@@ -1265,9 +1269,11 @@ export function setupSubagent(pi: ExtensionAPI) {
 						const rows = tui.terminal?.rows ?? 24;
 						const viewportH = Math.max(4, Math.floor(rows * 0.55));
 						lastViewportH = viewportH;
-						const row = (content: string): string => {
+						const row = (content: string, bgColor?: string): string => {
 							const clipped = truncateToWidth(content, innerW);
-							return border("│") + clipped + " ".repeat(Math.max(0, innerW - visibleWidth(clipped))) + border("│");
+							const padded = clipped + " ".repeat(Math.max(0, innerW - visibleWidth(clipped)));
+							const inner = bgColor ? theme.bg(bgColor, padded) : padded;
+							return border("│") + inner + border("│");
 						};
 						const out: string[] = [border("┌" + hr + "┐")];
 
@@ -1302,7 +1308,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						if (expanded) {
 							const model = cur.model ? theme.fg("dim", ` ${cur.model}`) : "";
 							const status = cur.running ? theme.fg("warning", cur.stuck ? " · stuck" : " · running") : cur.ok ? theme.fg("dim", " · done") : theme.fg("error", " · failed");
-							out.push(row(`${glyph(cur)} ${theme.fg("accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${status}`));
+							out.push(row(`${glyph(cur)} ${theme.fg("accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${status}`, "selectedBg"));
 							const detailRows = [
 								...wrapTextWithAnsi(`  ${cur.subLabel}`, Math.max(1, innerW)).slice(0, 2),
 								...(cur.reason ? wrapTextWithAnsi(`  ↳ ${cur.reason}`, Math.max(1, innerW)).slice(0, 2) : []),
@@ -1316,7 +1322,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							if (atBottom) scrollOffset = maxOffset;
 							scrollOffset = Math.min(Math.max(scrollOffset, 0), maxOffset);
 							const slice = lines.slice(scrollOffset, scrollOffset + viewportH);
-							for (const l of slice) out.push(row(l));
+							for (const l of slice) out.push(row(l.text, l.bg));
 							for (let i = slice.length; i < viewportH; i++) out.push(row(""));
 							for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
 							out.push(border("└" + hr + "┘"));
@@ -1332,7 +1338,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						out.push(row(theme.fg("accent", " Subagent Inspector ")));
 						out.push(border("├" + hr + "┤"));
 						const runningCount = items.filter((i) => i.running).length;
-						const listRows: { line: string; itemIdx: number | null }[] = [];
+						const listRows: { line: string; itemIdx: number | null; bg?: string }[] = [];
 						let runHdr = false;
 						let doneHdr = false;
 						for (let i = 0; i < items.length; i++) {
@@ -1349,9 +1355,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const sel = i === idx;
 							const model = it.model ? theme.fg("dim", ` ${it.model}`) : "";
 							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
-							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i });
+							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i, bg: sel ? "selectedBg" : undefined });
 							const subLabel = sel && it.reason ? `${it.subLabel} · ↳ ${outputPreview(it.reason, 80)}` : it.subLabel;
-							listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i });
+							listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i, bg: sel ? "selectedBg" : undefined });
 						}
 						let winStart = 0;
 						if (listRows.length > viewportH) {
@@ -1367,7 +1373,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							winEnd--;
 						}
 						const visibleRows = listRows.slice(winStart, winEnd).slice(0, viewportH);
-						for (const r of visibleRows) out.push(row(r.line));
+						for (const r of visibleRows) out.push(row(r.line, r.bg));
 						for (let i = visibleRows.length; i < viewportH; i++) out.push(row(""));
 						for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
 						out.push(border("└" + hr + "┘"));

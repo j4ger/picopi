@@ -63,7 +63,7 @@ class TodoPanel {
 		lines.push("");
 		lines.push(truncateToWidth(`  ${th.fg("dim", "Esc to close")}`, width));
 		lines.push("");
-		return lines;
+		return lines.map((l) => th.bg("customMessageBg", l));
 	}
 }
 
@@ -130,7 +130,7 @@ export function setupTodo(pi: ExtensionAPI) {
 						lines.push("  " + th.fg("success", "✓ ") + th.fg("dim", clip(text)));
 					}
 				}
-				return lines.map(lineClip);
+				return lines.map((l) => th.bg("customMessageBg", lineClip(l)));
 			},
 		}));
 	};
