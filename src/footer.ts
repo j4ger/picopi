@@ -14,7 +14,7 @@
  */
 
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
@@ -86,13 +86,35 @@ export function setupFooter(pi: ExtensionAPI): void {
 				},
 				invalidate() {},
 				render(width: number): string[] {
+					const ELLIPSIS = "...";
+					const SEP = " • ";
+					const fg = (key: string, fallback: ThemeColor, text: string): string => {
+						try { return theme.fg(key as ThemeColor, text); } catch { return theme.fg(fallback, text); }
+					};
+					const contextSeverity = (pct: number): ThemeColor => {
+						if (pct > 90) return "error";
+						if (pct > 70) return "warning";
+						return "footerStats" as ThemeColor;
+					};
+					const fitColumns = (left: string, right: string, w: number): string => {
+						const lw = visibleWidth(left);
+						const rw = visibleWidth(right);
+						if (lw + 2 + rw <= w) return left + " ".repeat(w - lw - rw) + right;
+						const room = w - lw - 2;
+						if (room > 0) {
+							const cut = truncateToWidth(right, room, "");
+							return left + " ".repeat(Math.max(0, w - lw - visibleWidth(cut))) + cut;
+						}
+						return left;
+					};
+
 					// ---- pwd line -------------------------------------------------
-					let pwd = formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE);
+					let pwdPath = formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE);
 					const branch = footerData.getGitBranch();
-					if (branch) pwd = `${pwd} (${branch})`;
+					if (branch) pwdPath = `${pwdPath} ${theme.fg("accent", `(${branch})`)}`;
 					const sessionName = ctx.sessionManager.getSessionName();
-					if (sessionName) pwd = `${pwd} • ${sessionName}`;
-					const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+					if (sessionName) pwdPath = `${pwdPath} ${theme.fg("muted", `${SEP}${sessionName}`)}`;
+					const pwdLine = truncateToWidth(fg("footerPath", "dim", pwdPath), width, fg("footerPath", "dim", ELLIPSIS));
 
 					// ---- token totals --------------------------------------------
 					let input = 0;
@@ -120,14 +142,14 @@ export function setupFooter(pi: ExtensionAPI): void {
 						percent === "?"
 							? `?/${formatTokens(contextWindow)}`
 							: `${percent}%/${formatTokens(contextWindow)}`;
-					let ctxStr: string;
-					if (percentValue > 90) ctxStr = theme.fg("error", ctxText);
-					else if (percentValue > 70) ctxStr = theme.fg("warning", ctxText);
-					else ctxStr = theme.fg("dim", ctxText);
+					const severity = contextSeverity(percentValue);
+					const ctxStr = severity === "footerStats"
+						? fg("footerStats", "dim", ctxText)
+						: theme.fg(severity, ctxText);
 
 					// ---- left side: picopi glyph + role + stats ------------------
 					const glyph = state.role
-						? theme.fg("accent", "⬡ ") + theme.fg("dim", state.role)
+						? theme.fg("accent", "⬡ ") + fg("footerStats", "dim", state.role)
 						: theme.fg("accent", "⬡");
 					const parts: string[] = [];
 					if (input) parts.push(`↑${formatTokens(input)}`);
@@ -136,18 +158,13 @@ export function setupFooter(pi: ExtensionAPI): void {
 					if (cacheWrite) parts.push(`W${formatTokens(cacheWrite)}`);
 					const usingSub = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
 					if (cost || usingSub) parts.push(`$${cost.toFixed(3)}${usingSub ? " (sub)" : ""}`);
-					const statsStr = parts.length ? theme.fg("dim", parts.join(" ")) : "";
-					let left = statsStr ? `${glyph}  ${statsStr} ${ctxStr}` : `${glyph}  ${ctxStr}`;
-					let leftWidth = visibleWidth(left);
-					if (leftWidth > width) {
-						left = truncateToWidth(left, width, theme.fg("dim", "..."));
-						leftWidth = visibleWidth(left);
-					}
+					const statsStr = parts.length ? fg("footerStats", "dim", parts.join(" ")) : "";
+					const left = statsStr ? `${glyph}  ${statsStr} ${ctxStr}` : `${glyph}  ${ctxStr}`;
 
 					// ---- right side: model NAME + thinking ----------------------
 					const modelName = ctx.model?.name || ctx.model?.id || "no-model";
 					let rightPlain = modelName;
-					let rightColor: "dim" | "warning" = "dim";
+					let rightColor: ThemeColor = "footerModel" as ThemeColor;
 					if (state.fallbackTo) {
 						const fb = state.fallbackTo;
 						const slashIdx = fb.lastIndexOf("/");
@@ -157,6 +174,22 @@ export function setupFooter(pi: ExtensionAPI): void {
 						// Show original (pre-fallback) model + fallback target, compact.
 						rightPlain = fbProvider ? `${orig} ⤵ ${fbProvider}/${fbId}` : `${orig} ⤵ ${fbId}`;
 						rightColor = "warning";
+						// Truncate from middle if fallback spec is too long
+						const maxRw = Math.floor(width * 0.5);
+						const ellipsisW = visibleWidth(ELLIPSIS);
+						if (visibleWidth(rightPlain) > maxRw) {
+							const sideW = Math.max(1, Math.floor((maxRw - ellipsisW) / 2));
+							const start = truncateToWidth(rightPlain, sideW, "");
+							let endChars = "";
+							let ew = 0;
+							for (let i = rightPlain.length - 1; i >= 0; i--) {
+								const cw = visibleWidth(rightPlain[i]);
+								if (ew + cw > sideW) break;
+								endChars = rightPlain[i] + endChars;
+								ew += cw;
+							}
+							rightPlain = start + ELLIPSIS + endChars;
+						}
 					}
 					if (!state.fallbackTo && ctx.model?.reasoning) {
 						const level = pi.getThinkingLevel() || "off";
@@ -164,24 +197,14 @@ export function setupFooter(pi: ExtensionAPI): void {
 					}
 					if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
 						const withProvider = `(${ctx.model.provider}) ${rightPlain}`;
-						if (leftWidth + 2 + visibleWidth(withProvider) <= width) rightPlain = withProvider;
+						rightPlain = withProvider;
 					}
-					const right = theme.fg(rightColor, rightPlain);
-					const rightWidth = visibleWidth(right);
+					const right = rightColor === "footerModel"
+						? fg("footerModel", "dim", rightPlain)
+						: theme.fg(rightColor, rightPlain);
 
 					// ---- compose stats line -------------------------------------
-					let statsLine: string;
-					if (leftWidth + 2 + rightWidth <= width) {
-						statsLine = left + " ".repeat(width - leftWidth - rightWidth) + right;
-					} else {
-						const room = width - leftWidth - 2;
-						if (room > 0) {
-							const cut = truncateToWidth(right, room, "");
-							statsLine = left + " ".repeat(Math.max(0, width - leftWidth - visibleWidth(cut))) + cut;
-						} else {
-							statsLine = left;
-						}
-					}
+					const statsLine = fitColumns(left, right, width);
 
 					const lines = [pwdLine, statsLine];
 

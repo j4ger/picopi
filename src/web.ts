@@ -719,8 +719,10 @@ export function setupWeb(pi: ExtensionAPI) {
 			return { content: [{ type: "text", text }], details: { results: details }, isError: allFailed };
 		},
 		renderCall(args, theme) {
-			const q = args.queries?.length ? `${args.queries.length} queries` : args.query || "…";
-			return new Text(theme.fg("toolTitle", theme.bold("web_search ")) + theme.fg("accent", q), 0, 0);
+			const query = args.query || (args.queries?.[0]) || "…";
+			const truncated = query.length > 40 ? query.slice(0, 40) + "…" : query;
+			const multi = args.queries && args.queries.length > 1 ? ` +${args.queries.length - 1}` : "";
+			return new Text(theme.fg("toolTitle", theme.bold("web_search ")) + theme.fg("muted", truncated + multi), 0, 0);
 		},
 		renderResult(result, _opts, theme) {
 			const d = result.details as { results?: SearchResult[] } | undefined;
@@ -729,7 +731,8 @@ export function setupWeb(pi: ExtensionAPI) {
 			const isErr = result.isError || total === 0;
 			const icon = isErr ? "✗ " : "✓ ";
 			const color: "error" | "success" = isErr ? "error" : "success";
-			return new Text(theme.fg(color, icon) + theme.fg("muted", `${total} sources via ${prov}`), 0, 0);
+			const info = isErr ? "error" : `${total} sources via ${prov}`;
+			return new Text(theme.fg(color, icon) + theme.fg("toolMeta", info), 0, 0);
 		},
 	});
 
@@ -781,8 +784,10 @@ export function setupWeb(pi: ExtensionAPI) {
 			return { content: [{ type: "text", text }], details: { urls }, isError: allFailed };
 		},
 		renderCall(args, theme) {
-			const u = args.urls?.length ? `${args.urls.length} urls` : args.url || "…";
-			return new Text(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("accent", u), 0, 0);
+			const url = args.url || (args.urls?.[0]) || "…";
+			const truncated = url.length > 45 ? url.slice(0, 45) + "…" : url;
+			const multi = args.urls && args.urls.length > 1 ? ` +${args.urls.length - 1}` : "";
+			return new Text(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("muted", truncated + multi), 0, 0);
 		},
 		renderResult(result, _opts, theme) {
 			const t = result.content[0];
@@ -790,7 +795,8 @@ export function setupWeb(pi: ExtensionAPI) {
 			const isErr = result.isError || !text;
 			const icon = isErr ? "✗ " : "✓ ";
 			const color: "error" | "success" = isErr ? "error" : "success";
-			return new Text(theme.fg(color, icon) + theme.fg("muted", `${text.length} chars`), 0, 0);
+			const info = isErr ? "error" : `${text.length} chars`;
+			return new Text(theme.fg(color, icon) + theme.fg("toolMeta", info), 0, 0);
 		},
 	});
 }

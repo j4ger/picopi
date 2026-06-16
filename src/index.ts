@@ -21,7 +21,7 @@ import { setupWeb } from "./web.ts";
 function showBoxedOverlay(ctx: ExtensionCommandContext, lines: string[]): Promise<void> {
 	return ctx.ui.custom<void>((_tui, theme, _kb, done) => ({
 		render(width: number): string[] {
-			const border = (s: string) => theme.fg("accent", s);
+			const border = (s: string) => { try { return theme.fg("panelBorder", s); } catch { return theme.fg("muted", s); } };
 			const innerW = Math.max(0, width - 2);
 			const hr = "─".repeat(innerW);
 			const out = [border("┌" + hr + "┐")];
@@ -192,14 +192,22 @@ export default function (pi: ExtensionAPI) {
 			const report = await validateAllResolutions(ctx.modelRegistry as unknown as ModelRegistryLike, cfg);
 			const resultMap = new Map(report.results.map((r) => [r.role, r]));
 
+			// Safe color — fall back to existing key if new semantic key doesn't exist.
+			const fg = (key: string, fallback: string, text: string) => {
+				try { return th.fg(key, text); } catch { return th.fg(fallback, text); }
+			};
+
 			const row = (name: string, r: { model: string; thinking?: string; timeout?: number }, ok?: boolean, resolved?: string) => {
-				const indicator = ok === true ? th.fg("success", "✓ ") : ok === false ? th.fg("error", "✗ ") : "  ";
+				const indicator = ok === true ? th.fg("success", "✓ ") : ok === false ? th.fg("error", "✗ ") : th.fg("dim", "· ");
 				const resolvedPart = resolved ? th.fg("dim", ` → ${resolved}`) : "";
-				return indicator + th.fg("text", name.padEnd(13)) + th.fg("accent", r.model) + resolvedPart + th.fg("dim", ` ·${r.thinking ?? "off"}`) + (r.timeout ? th.fg("dim", ` ${r.timeout}s`) : "");
+				const modelStr = resolved ? th.fg("accent", r.model) + resolvedPart : th.fg("accent", r.model);
+				const thinkingPart = th.fg("dim", ` ·${r.thinking ?? "off"}`);
+				const timeoutPart = r.timeout ? th.fg("dim", ` ${r.timeout}s`) : "";
+				return ` ${indicator}${th.fg("text", name.padEnd(15))}${modelStr}${thinkingPart}${timeoutPart}`;
 			};
 
 			const lines: string[] = [];
-			lines.push(th.fg("accent", " ⬡ picopi") + "  " + th.fg("dim", configPath() ?? "(defaults)"));
+			lines.push(fg("overlayTitle", "accent", " ⬡ picopi") + "  " + th.fg("dim", configPath() ?? "(defaults)"));
 			const activePreset = getActivePreset();
 			if (activePreset) lines.push("  " + th.fg("dim", "preset: ") + th.fg("accent", activePreset));
 
@@ -231,8 +239,22 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			for (const [alias, models] of Object.entries(cfg.aliases ?? {})) {
-				lines.push("  " + th.fg("muted", `${alias} → `) + th.fg("dim", models.join(" → ")));
+			// Aliases section with divider
+			const aliases = Object.entries(cfg.aliases ?? {});
+			if (aliases.length > 0) {
+				lines.push(fg("panelBorder", "muted", " ── Aliases ──"));
+				for (const [alias, models] of aliases) {
+					const roleRes = report.results.find(r => r.alias === alias);
+					const isUnresolved = roleRes && !roleRes.ok;
+					const aliasColor = isUnresolved ? "error" : "muted";
+					const targetColor = isUnresolved ? "error" : "dim";
+					lines.push("  " + th.fg(aliasColor, `${alias} → `) + th.fg(targetColor, models.join(" → ")));
+					if (isUnresolved) {
+						for (const issue of roleRes!.issues) {
+							lines.push("      " + th.fg("error", `${issue.spec || alias} → ${issue.reason}`));
+						}
+					}
+				}
 			}
 
 			await showBoxedOverlay(ctx, lines);
