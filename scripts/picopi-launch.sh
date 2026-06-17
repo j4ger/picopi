@@ -39,7 +39,6 @@ pi_bin="${PICOPI_PI_BIN:-}"
 export PI_CODING_AGENT_DIR="$dir"
 exec "$pi_bin" \
   --extension "$src/src" \
-  --prompt-template "$src/agent/prompts" \
   --theme "$src/agent/themes" \
   --append-system-prompt "$src/agent/AGENTS.md" \
   "$@"
