@@ -5,8 +5,8 @@
  * Models/thinking from central config.json `agents` map.
  * Spawns isolated `pi` processes (JSON mode, no session).
  *
- * Modes: single {agent, task, reason}, parallel {tasks: [{agent, task, reason}]}
- * Features: status panel overlay, reason metadata, watchdog timer for stuck detection.
+ * Modes: single {agent, task} or parallel {tasks: [{agent, task}]}.
+ * Features: status panel overlay, optional reason (UI-only) metadata, watchdog timer for stuck detection.
  */
 
 import { spawn } from "node:child_process";
@@ -823,13 +823,12 @@ async function mapLimit<I, O>(items: I[], limit: number, fn: (i: I, idx: number)
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Agent name" }),
 	task: Type.String({ description: "Task for the agent" }),
-	reason: Type.Optional(Type.String({ description: "Rationale for delegating this task" })),
 });
 const Params = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task (single mode)" })),
-	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task, reason} (max 6)" })),
-	reason: Type.Optional(Type.String({ description: "Rationale for delegation; used directly in single mode and as fallback for parallel tasks" })),
+	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task} (max 6)" })),
+	reason: Type.Optional(Type.String({ description: "UI-only metadata for the status panel; the subagent cannot see it" })),
 	timeout: Type.Optional(Type.Number({ description: `Inactivity timeout in seconds; subagent killed if it emits no events for this long (default: ${DEFAULT_TIMEOUT})` })),
 });
 
@@ -885,7 +884,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				: statusFg(theme, "failed", `✗ ${d.preview}`);
 			text += `\n${previewLine}`;
 		}
-		if (d.reason) text += `\n${theme.fg("dim", `reason: ${outputPreview(d.reason, 100)}`)}`;
+		if (d.reason) text += `\n${theme.fg("dim", `note: ${outputPreview(d.reason, 100)}`)}`;
 		return new Text(text, 1, 0);
 	});
 
@@ -901,7 +900,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 		promptSnippet: "Delegate to specialist subagents",
 		promptGuidelines: [
 			"Delegate by default: planner=design/planning, explorer=recon, fixer=implementation, auditor=review, web-searcher=research.",
-			"Include a brief reason (shown in the status panel).",
+			"Optional `reason` is UI-only metadata; the subagent cannot see it.",
 			"Fixer tasks: one concrete concern, ~1-3 files; split or plan first if larger.",
 			"Parallel { tasks: [...] } only for independent work.",
 		],
@@ -939,7 +938,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const batchId = startSubagentBatch();
 				const sids = params.tasks!.map((t, i) => {
 					const sid = `par-${i}-${Date.now()}`;
-					trackAgent(sid, batchId, t.agent, t.task, timeout, t.reason ?? params.reason);
+					trackAgent(sid, batchId, t.agent, t.task, timeout, params.reason);
 					return sid;
 				});
 
@@ -989,7 +988,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							task: batch.length === 1
 								? batch[0].t.task
 								: `${totalPanes} parallel tasks`,
-							reason: batch[0].t.reason ?? params.reason,
+							reason: params.reason,
 							ok: isFinal && ok === totalPanes,
 							durationMs: Date.now() - start,
 							preview: isFinal
@@ -1008,7 +1007,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				};
 
 				const results = await mapLimit(params.tasks!, concurrency, async (t, i) => {
-					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout, t.reason ?? params.reason);
+					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout, params.reason);
 					completed++;
 					if (!failed(result)) okTally++;
 					if (result.stuck) stuckTally++;
@@ -1382,7 +1381,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							out.push(row(`${glyph(cur)} ${tryFg(theme, "overlayTitle", "accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${statusLabel}`, "selectedBg"));
 							// Metadata row: task, reason, model
 							const metaParts: string[] = [cur.subLabel];
-							if (cur.reason) metaParts.push(`↳ ${cur.reason}`);
+							if (cur.reason) metaParts.push(`note: ${cur.reason}`);
 							if (cur.model) metaParts.push(cur.model);
 							const metaLine = truncateToWidth(metaParts.join(" · "), innerW - 2, "…");
 							out.push(row(theme.fg("dim", `  ${metaLine}`)));
@@ -1427,7 +1426,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							const model = it.model ? theme.fg("dim", ` ${it.model}`) : "";
 							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
 							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i, bg: sel ? "selectedBg" : undefined });
-							const subLabel = sel && it.reason ? `${it.subLabel} · ↳ ${outputPreview(it.reason, 80)}` : it.subLabel;
+							const subLabel = sel && it.reason ? `${it.subLabel} · note: ${outputPreview(it.reason, 80)}` : it.subLabel;
 							listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i, bg: sel ? "selectedBg" : undefined });
 						}
 						let winStart = 0;
