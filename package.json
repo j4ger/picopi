@@ -28,9 +28,6 @@
     "agents": [
       "./agent/agents"
     ],
-    "prompts": [
-      "./agent/prompts"
-    ],
     "themes": [
       "./agent/themes"
     ]

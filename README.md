@@ -73,8 +73,8 @@ You can run `/picopi` to verify every role resolves.
 | `/undo` | Rewind one turn |
 | `/checkpoints` | List workspace checkpoints |
 | `/todos` | Open todo panel |
-| `/review [focus]` | Run auditor on working tree |
-| `/research <q>` | Web search synthesis |
+| `/tree` | Session tree navigator |
+
 | `/tree` | Session tree navigator |
 | `/subagents` | Live subagent inspector |
 | `/fork` | Fork current session |
