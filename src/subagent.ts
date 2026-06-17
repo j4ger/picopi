@@ -943,93 +943,17 @@ export function setupSubagent(pi: ExtensionAPI) {
 				});
 
 				let completed = 0;
-				let okTally = 0;
-				let stuckTally = 0;
 				const startMs = Date.now();
 				const concurrency = cfg.concurrency ?? DEFAULT_CONCURRENCY;
-				// Batch buffer + debounce: merge near-simultaneous completions
-				interface PendingCompletion {
-					t: (typeof params.tasks)[number];
-					result: RunResult;
-					completed: number;
-					okTally: number;
-					stuckTally: number;
-					startMs: number;
-				}
-				const pendingCompletions: PendingCompletion[] = [];
-				let debounceTimer: NodeJS.Timeout | null = null;
-				const FLUSH_DEBOUNCE_MS = 500;
-
-				/** Flush accumulated completions as one steer message. */
-				const flushPending = () => {
-					if (pendingCompletions.length === 0) return;
-					const batch = pendingCompletions.splice(0);
-					const totalPanes = params.tasks!.length;
-					const last = batch[batch.length - 1];
-					const completed = last.completed;
-					const ok = last.okTally;
-					const stuck = last.stuckTally;
-					const start = batch[0].startMs;
-					const isFinal = completed === totalPanes;
-					const agents = [...new Set(batch.map((p) => p.t.agent))];
-					const agentList = agents.join(", ");
-					const summary = isFinal
-						? (stuck > 0 ? `${ok} ok, ${stuck} timeout` : `${ok}/${totalPanes} ok`)
-						: `${completed}/${totalPanes} done`;
-					const content = batch.length === 1
-						? `${batch[0].t.agent} ${failed(batch[0].result) ? "failed" : "done"}`
-						: `${agentList} done · ${summary}`;
-					pi.sendMessage({
-						customType: "subagent-complete",
-						content,
-						display: true,
-						details: {
-							agent: agentList,
-							task: batch.length === 1
-								? batch[0].t.task
-								: `${totalPanes} parallel tasks`,
-							reason: params.reason,
-							ok: isFinal && ok === totalPanes,
-							durationMs: Date.now() - start,
-							preview: isFinal
-								? (ok === totalPanes
-									? `All ${totalPanes} tasks completed`
-									: `${totalPanes - ok} failed`)
-								: `${completed}/${totalPanes} done`,
-						} satisfies SubagentCompleteDetails,
-					}, { deliverAs: "steer" });
-					// Schedule another flush for completions during orchestrator's turn.
-					if (debounceTimer) clearTimeout(debounceTimer);
-					debounceTimer = setTimeout(() => {
-						debounceTimer = null;
-						flushPending();
-					}, FLUSH_DEBOUNCE_MS);
-				};
 
 				const results = await mapLimit(params.tasks!, concurrency, async (t, i) => {
 					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout, params.reason);
 					completed++;
-					if (!failed(result)) okTally++;
-					if (result.stuck) stuckTally++;
 
 					onUpdate?.({
 						content: [{ type: "text", text: `${completed}/${totalPanes} done - ${t.agent} ${failed(result) ? "failed" : "ok"}` }],
 						details: { completed, total: totalPanes },
 					});
-
-					// Debounce steer messages: first completion triggers a turn
-					// immediately; near-simultaneous completions are batched into one
-					// steer (avoids N turns for N near-simultaneous completions).
-					pendingCompletions.push({ t, result, completed, okTally, stuckTally, startMs });
-					if (pendingCompletions.length === 1 && !debounceTimer) {
-						// First completion: flush immediately so orchestrator can act.
-						flushPending();
-						// Start debounce: subsequent completions accumulate.
-						debounceTimer = setTimeout(() => {
-							debounceTimer = null;
-							flushPending();
-						}, FLUSH_DEBOUNCE_MS);
-					}
 
 					persistResult(pi, result, Date.now() - startMs, sids[i]);
 					return result;
