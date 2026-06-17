@@ -105,7 +105,6 @@ export function setupTodo(pi: ExtensionAPI) {
 		}
 		// Snapshot text now; the factory must not reference the mutable `todos` array.
 		const isFolded = folded;
-		const count = open.length;
 		const openItems = open.map((t) => ({ text: t.text, id: t.id }));
 		const doneItems = done.map((t) => ({ text: t.text, id: t.id }));
 		// Factory form so we get the real viewport width and can truncate by display
@@ -114,13 +113,22 @@ export function setupTodo(pi: ExtensionAPI) {
 			invalidate() {},
 			render(width: number): string[] {
 				const lineClip = (s: string) => truncateToWidth(s, Math.max(1, width), "…");
-				const label = `${count} todo${count !== 1 ? "s" : ""}`;
 				if (isFolded) {
-					return [lineClip(`${th.fg("text", "▸ Todos ")}${th.fg("accent", label)} ${th.fg("dim", "alt+t")}`)];
+					const parts: string[] = [];
+					if (open.length) parts.push(th.fg("todoOpen", `○${open.length}`));
+					if (done.length) parts.push(th.fg("subagentDone", `✓${done.length}`));
+					const prefix = th.fg("dim", "▸ Todos");
+					const countSection = parts.length > 0 ? th.fg("dim", "  ") + parts.join(th.fg("dim", " ")) : "";
+					const keyHint = th.fg("dim", " │ alt+t");
+					return [lineClip(prefix + countSection + keyHint)];
 				}
 				const textWidth = Math.max(8, width - 6);
 				const clip = (s: string) => truncateToWidth(s, textWidth, "…");
-				const lines: string[] = [lineClip(`${th.fg("accent", "▾ Todos")} ${th.fg("accent", label)} ${th.fg("dim", "alt+t")}`)];
+				const headingParts: string[] = [];
+				if (open.length) headingParts.push(th.fg("todoOpen", `○${open.length}`));
+				if (done.length) headingParts.push(th.fg("subagentDone", `✓${done.length}`));
+				const headingCount = headingParts.length > 0 ? th.fg("dim", "  ") + headingParts.join(th.fg("dim", " ")) : "";
+				const lines: string[] = [lineClip(th.fg("accent", "▾ Todos") + headingCount + th.fg("dim", " │ alt+t"))];
 				const maxOpen = 5;
 				const shownOpen = openItems.slice(0, maxOpen);
 				for (const item of shownOpen) {
