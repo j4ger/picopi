@@ -968,6 +968,9 @@ export function setupSubagent(pi: ExtensionAPI) {
 			}
 
 			// Single mode
+			if (!params.reason) {
+				throw new Error("The 'reason' parameter is required when summoning a single subagent");
+			}
 			const batchId = startSubagentBatch();
 			const sid = `single-${Date.now()}`;
 			trackAgent(sid, batchId, params.agent!, params.task!, timeout, params.reason);
@@ -1116,7 +1119,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const fromStatus = (s: SubagentStatus): InspectItem => ({
 					key: s.id,
 					agent: s.agent,
-					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : s.task,
+					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : (s.reason || s.task),
 					reason: s.reason,
 					running: s.status === "running" || s.status === "stuck",
 					ok: s.status === "done",
@@ -1129,7 +1132,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const fromHist = (r: SubagentResultEntry): InspectItem => ({
 					key: r.id ?? `${r.timestamp}-${r.agent}`,
 					agent: r.agent,
-					subLabel: r.task,
+					subLabel: (r.reason || r.task),
 					reason: r.reason,
 					running: false,
 					ok: r.ok,
@@ -1495,7 +1498,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const fromStatus = (s: SubagentStatus): InspectItem => ({
 					key: s.id,
 					agent: s.agent,
-					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : s.task,
+					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : (s.reason || s.task),
 					reason: s.reason,
 					running: s.status === "running" || s.status === "stuck",
 					ok: s.status === "done",
@@ -1508,7 +1511,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const fromHist = (r: SubagentResultEntry): InspectItem => ({
 					key: r.id ?? `${r.timestamp}-${r.agent}`,
 					agent: r.agent,
-					subLabel: r.task,
+					subLabel: (r.reason || r.task),
 					reason: r.reason,
 					running: false,
 					ok: r.ok,
