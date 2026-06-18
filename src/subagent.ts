@@ -364,7 +364,7 @@ function updateStatusPanel(context?: any) {
 
 				const agentPart = statusFg(theme, sub.status, `${icon} ${truncateToWidth(sub.agent, 12, "")}  ${elapsed}`);
 				if (sub.status === "stuck") {
-					lines.push(theme.fg("dim", "  ") + agentPart + statusFg(theme, "stuck", " timeout"));
+					lines.push(theme.fg("dim", "  ") + agentPart + theme.fg("dim", " timeout"));
 				} else if (sub.status === "failed") {
 					lines.push(theme.fg("dim", "  ") + agentPart + statusFg(theme, "failed", " failed"));
 				} else if (sub.status === "running") {
@@ -1067,7 +1067,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const icon = r.stuck ? statusFg(theme, "stuck", "⚠") : failed(r) ? statusFg(theme, "failed", "✗") : statusFg(theme, "done", "✓");
 				const statusTag = r.stuck ? statusFg(theme, "stuck", " timeout")
 					: failed(r) ? statusFg(theme, "failed", " failed")
-					: theme.fg("dim", " done");
+					: statusFg(theme, "done", " done");
 				const head = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${r.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, r.model)}`) : ""}`;
 				if (expanded) {
 					c.addChild(new Text(head, 0, 0));
@@ -1086,6 +1086,369 @@ export function setupSubagent(pi: ExtensionAPI) {
 		},
 	});
 
+/** Open the combined live+history subagent inspector overlay. */
+async function runInspector(ctx: any): Promise<void> {
+	rebuildResults(ctx);
+	inspectorOpen = true;
+	if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
+	// Continue into the inspector even when empty — it shows guidance
+	// Combined live + history inspector. Selection is keyed by a stable `key`
+	// (the subagent id) so an agent finishing mid-view doesn't shift the
+	// cursor when it migrates from activeSubagents to the persisted history.
+	interface InspectItem {
+		key: string;
+		agent: string;
+		subLabel: string;
+		reason?: string;
+		running: boolean;
+		ok: boolean;
+		stuck: boolean;
+		model?: string;
+		durationMs: number;
+		transcript?: TranscriptEntry[];
+		output?: string;
+		errorMessage?: string;
+		streamingText?: string;
+		isStreaming?: boolean;
+	}
+	const buildItems = (): InspectItem[] => {
+		const live = [...activeSubagents.values()];
+		const running = live
+			.filter((s) => s.status === "running" || s.status === "stuck")
+			.sort((a, b) => a.startTime - b.startTime);
+		const completedActive = live
+			.filter((s) => s.status === "done" || s.status === "failed")
+			.sort((a, b) => (a.endTime ?? 0) - (b.endTime ?? 0));
+		const activeIds = new Set(live.map((s) => s.id));
+		const histCompleted = resultHistory.filter((r) => !r.id || !activeIds.has(r.id));
+		const fromStatus = (s: SubagentStatus): InspectItem => ({
+			key: s.id,
+			agent: s.agent,
+			subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : (s.reason || s.task),
+			reason: s.reason,
+			running: s.status === "running" || s.status === "stuck",
+			ok: s.status === "done",
+			stuck: s.status === "stuck",
+			durationMs: (s.endTime ?? Date.now()) - s.startTime,
+			transcript: s.transcript,
+			streamingText: s.streamingText,
+			isStreaming: s.isStreaming,
+		});
+		const fromHist = (r: SubagentResultEntry): InspectItem => ({
+			key: r.id ?? `${r.timestamp}-${r.agent}`,
+			agent: r.agent,
+			subLabel: (r.reason || r.task),
+			reason: r.reason,
+			running: false,
+			ok: r.ok,
+			stuck: r.stuck ?? false,
+			model: r.model,
+			durationMs: r.durationMs,
+			transcript: r.transcript,
+			output: r.output,
+			errorMessage: r.errorMessage,
+		});
+		return [...running.map(fromStatus), ...completedActive.map(fromStatus), ...histCompleted.map(fromHist)];
+	};
+
+	try {
+		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		let selectedKey: string | null = null;
+		let lastIndex = 0;
+		let initialized = false;
+		let expanded = false;
+		let scrollOffset = 0;
+		let atBottom = true;
+		// Captured during render so the (width-less) handleInput can clamp scrolling.
+		let lastMaxOffset = 0;
+		let lastViewportH = 10;
+		let verbosity = 1; // 0=minimal, 1=normal, 2=verbose
+		let renderPending = false;
+		let renderTimer: ReturnType<typeof setTimeout> | undefined;
+		let disposed = false;
+		let lastInputAt = 0;
+		const markDirty = () => {
+			if (disposed || renderPending) return;
+			renderPending = true;
+			renderTimer = setTimeout(() => {
+				renderPending = false;
+				renderTimer = undefined;
+				if (!disposed) tui.requestRender();
+			}, 33);
+		};
+
+		const glyph = (it: InspectItem): string =>
+			it.stuck ? statusFg(theme, "stuck", "⚠")
+				: it.running ? statusFg(theme, "running", "◌")
+					: it.ok ? statusFg(theme, "done", "✓")
+						: statusFg(theme, "failed", "✗");
+
+		interface TranscriptLine { text: string; bg?: string; }
+		const transcriptLines = (it: InspectItem, innerW: number): TranscriptLine[] => {
+			const lines: TranscriptLine[] = [];
+			const truncate = (s: string, maxW: number) => truncateToWidth(s, Math.max(1, maxW), "…");
+			const wrap = (s: string, indent: string, bg?: string) => {
+				for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push({ text: indent + w, bg });
+			};
+			if (it.transcript && it.transcript.length) {
+				for (const e of it.transcript) {
+					if (e.kind === "assistant") {
+						if (verbosity >= 2) {
+							wrap(theme.fg("text", e.text), "  ");
+						} else if (verbosity === 1) {
+							const previewLines = e.text.split("\n").filter(l => l.trim());
+							const preview = previewLines.slice(0, 4).join("\n");
+							wrap(theme.fg("dim", truncate(preview, innerW * 4)), "  ");
+						}
+						// verbosity 0: skip assistant text entirely
+					} else if (e.kind === "tool-call") {
+						const arg = primaryArg(e.toolName, e.args);
+						const summary = arg ? `${e.toolName ?? e.text} ${arg}` : (e.toolName ?? e.text);
+						lines.push({ text: theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`), bg: "toolPendingBg" });
+					} else if (e.kind === "tool-done") {
+						const arg = primaryArg(e.toolName, e.args);
+						const status = summarizeResult(e.toolName, e.result, e.args);
+						const summary = arg ? `${e.toolName ?? e.text} ${arg} — ${status}` : `${e.toolName ?? e.text} — ${status}`;
+						if (e.isError) {
+							lines.push({ text: theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`), bg: "toolErrorBg" });
+							if (e.result != null) {
+								const preview = typeof e.result === "string" ? e.result : JSON.stringify(e.result);
+								for (const line of preview.split("\n").slice(0, 6)) {
+									lines.push({ text: theme.fg("error", `  ${truncate(line, innerW - 4)}`), bg: "toolErrorBg" });
+								}
+							}
+						} else {
+							lines.push({ text: theme.fg("success", `✓ ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
+						}
+					}
+				}
+				if (lines.length === 0) {
+					lines.push({ text: theme.fg("dim", "  (assistant output hidden — press v)") });
+				}
+			} else if (it.output) {
+				if (verbosity >= 1) wrap(theme.fg("text", it.output), "  ");
+				else lines.push({ text: theme.fg("dim", "  (output available, press v to show)") });
+			} else {
+				lines.push({ text: theme.fg("dim", "  (no transcript recorded)") });
+			}
+			// Show streaming text for running agents
+			if (it.streamingText && it.isStreaming) {
+				lines.push({ text: "" });
+				lines.push({ text: theme.fg("accent", "  streaming:") });
+				const streamLines = it.streamingText.split("\n");
+				const lastLines = streamLines.slice(-5);
+				for (let i = 0; i < lastLines.length; i++) {
+					const cursor = i === lastLines.length - 1 ? "▌" : "";
+					lines.push({ text: theme.fg("text", `  ${truncate(lastLines[i], innerW - 4)}${cursor}`) });
+				}
+			}
+			if (it.errorMessage) {
+				lines.push({ text: "" });
+				wrap(theme.fg("error", `Error: ${it.errorMessage}`), "  ");
+			}
+			return lines;
+		};
+
+		// Coalesce live refreshes with keypress-driven renders. List view refreshes
+		// only while idle so navigation cannot race the periodic update.
+		const interval = setInterval(() => {
+			if (!expanded && Date.now() - lastInputAt < 350) return;
+			const hasLive = activeSubagents.size > 0;
+			rebuildResults(ctx);
+			if (!hasLive && resultHistory.length === 0) return;
+			if (!hasLive && !expanded) return;
+			markDirty();
+		}, 1000);
+
+		return {
+			render(width: number): string[] {
+				const border = (s: string) => tryFg(theme, "panelBorder", "accent", s);
+				const innerW = Math.max(0, width - 2);
+				const hr = "─".repeat(innerW);
+				const rows = tui.terminal?.rows ?? 24;
+				const viewportH = Math.max(4, Math.floor(rows * 0.55));
+				lastViewportH = viewportH;
+				const row = (content: string, bgColor?: string): string => {
+					const clipped = truncateToWidth(content, innerW);
+					const padded = clipped + " ".repeat(Math.max(0, innerW - visibleWidth(clipped)));
+					const inner = bgColor ? theme.bg(bgColor, padded) : padded;
+					return border("│") + inner + border("│");
+				};
+				const out: string[] = [border("┌" + hr + "┐")];
+
+				const items = buildItems();
+				if (items.length === 0) {
+					expanded = false;
+					out.push(row(tryFg(theme, "overlayTitle", "accent", " Subagent Inspector ")));
+					out.push(border("├" + hr + "┤"));
+					out.push(row(theme.fg("dim", "  No subagents yet")));
+					out.push(row(theme.fg("dim", "  Delegated subagent runs will appear here")));
+					out.push(row(theme.fg("dim", "  when you use the subagent tool.")));
+					out.push(row(theme.fg("dim", "  Results are scoped to the current branch.")));
+					for (let i = 0; i < viewportH; i++) out.push(row(""));
+					out.push(border("└" + hr + "┘"));
+					out.push(truncateToWidth(theme.fg("dim", "  r refresh  q close"), width));
+					return out;
+				}
+
+				if (!initialized) {
+					initialized = true;
+					const firstRunning = items.findIndex((i) => i.running);
+					const startIdx = firstRunning !== -1 ? firstRunning : items.length - 1;
+					selectedKey = items[startIdx].key;
+					lastIndex = startIdx;
+				}
+				let idx = items.findIndex((i) => i.key === selectedKey);
+				if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
+				selectedKey = items[idx].key;
+				lastIndex = idx;
+				const cur = items[idx];
+
+				if (expanded) {
+					const model = cur.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model)}`) : "";
+					const statusLabel = cur.running
+						? (cur.stuck ? statusFg(theme, "stuck", " · stuck") : statusFg(theme, "running", " · running"))
+						: cur.ok ? statusFg(theme, "done", " · done")
+						: statusFg(theme, "failed", " · failed");
+					out.push(row(`${glyph(cur)} ${tryFg(theme, "overlayTitle", "accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${statusLabel}`, "selectedBg"));
+					// Metadata row: task, reason, model
+					const metaParts: string[] = [cur.subLabel];
+					if (cur.reason) metaParts.push(`note: ${cur.reason}`);
+					if (cur.model) metaParts.push(resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model) ?? cur.model);
+					const metaLine = truncateToWidth(metaParts.join(" · "), innerW - 2, "…");
+					out.push(row(theme.fg("dim", `  ${metaLine}`)));
+					out.push(border("├" + hr + "┤"));
+					const lines = transcriptLines(cur, innerW);
+					const maxOffset = Math.max(0, lines.length - viewportH);
+					lastMaxOffset = maxOffset;
+					if (atBottom) scrollOffset = maxOffset;
+					scrollOffset = Math.min(Math.max(scrollOffset, 0), maxOffset);
+					const slice = lines.slice(scrollOffset, scrollOffset + viewportH);
+					for (const l of slice) out.push(row(l.text, l.bg));
+					for (let i = slice.length; i < viewportH; i++) out.push(row(""));
+					for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
+					out.push(border("└" + hr + "┘"));
+					const more: string[] = [];
+					if (scrollOffset > 0) more.push("↑ more");
+					if (scrollOffset < maxOffset) more.push("↓ more");
+					const tail = more.length ? `   ${more.join("  ")}` : "";
+					out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Enter back  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q close${tail}`), width));
+					return out;
+				}
+
+				// Collapsed: two sections (running, completed), windowed to the viewport.
+				out.push(row(tryFg(theme, "overlayTitle", "accent", " Subagent Inspector ")));
+				out.push(border("├" + hr + "┤"));
+				const runningCount = items.filter((i) => i.running).length;
+				const listRows: { line: string; itemIdx: number | null; bg?: string }[] = [];
+				let runHdr = false;
+				let doneHdr = false;
+				for (let i = 0; i < items.length; i++) {
+					const it = items[i];
+					if (it.running && !runHdr) {
+						listRows.push({ line: theme.fg("dim", ` Running (${runningCount})`), itemIdx: null });
+						runHdr = true;
+					}
+					if (!it.running && !doneHdr) {
+						if (runHdr) listRows.push({ line: "", itemIdx: null });
+						listRows.push({ line: theme.fg("dim", ` Completed (${items.length - runningCount})`), itemIdx: null });
+						doneHdr = true;
+					}
+					const sel = i === idx;
+					const model = it.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, it.model)}`) : "";
+					const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
+					listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i, bg: sel ? "selectedBg" : undefined });
+					const subLabel = sel && it.reason ? `${it.subLabel} · note: ${outputPreview(it.reason, 80)}` : it.subLabel;
+					listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i, bg: sel ? "selectedBg" : undefined });
+				}
+				let winStart = 0;
+				if (listRows.length > viewportH) {
+					const selRow = listRows.findIndex((r) => r.itemIdx === idx);
+					winStart = Math.max(0, Math.min(selRow - Math.floor(viewportH / 2), listRows.length - viewportH));
+				}
+				// Adjust to item block boundaries: don't start on a sub-row or end mid-pair
+				while (winStart > 0 && listRows[winStart].itemIdx !== null && listRows[winStart - 1].itemIdx === listRows[winStart].itemIdx) {
+					winStart--;
+				}
+				let winEnd = Math.min(winStart + viewportH, listRows.length);
+				while (winEnd > winStart && winEnd < listRows.length && listRows[winEnd - 1].itemIdx !== null && listRows[winEnd].itemIdx === listRows[winEnd - 1].itemIdx) {
+					winEnd--;
+				}
+				const visibleRows = listRows.slice(winStart, winEnd).slice(0, viewportH);
+				for (const r of visibleRows) out.push(row(r.line, r.bg));
+				for (let i = visibleRows.length; i < viewportH; i++) out.push(row(""));
+				for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
+				out.push(border("└" + hr + "┘"));
+				const listMore: string[] = [];
+				if (winStart > 0) listMore.push("↑ more");
+				if (winEnd < listRows.length) listMore.push("↓ more");
+				const listTail = listMore.length ? `   ${listMore.join("  ")}` : "";
+				out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  Enter open  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q close${listTail}`), width));
+				return out;
+			},
+			invalidate() {},
+			handleInput(data: string) {
+				lastInputAt = Date.now();
+				if (matchesKey(data, "ctrl+c")) { done(); return; }
+				const items = buildItems();
+				if (items.length === 0) {
+					if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); markDirty(); }
+					else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
+					return;
+				}
+				let idx = items.findIndex((i) => i.key === selectedKey);
+				if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
+				const select = (n: number) => {
+					idx = Math.min(Math.max(0, n), items.length - 1);
+					selectedKey = items[idx].key;
+					lastIndex = idx;
+				};
+
+				if (expanded) {
+					if (matchesKey(data, "up")) { scrollOffset = Math.max(0, scrollOffset - 1); atBottom = scrollOffset >= lastMaxOffset; }
+					else if (matchesKey(data, "down")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + 1); atBottom = scrollOffset >= lastMaxOffset; }
+					else if (matchesKey(data, "pageUp")) { scrollOffset = Math.max(0, scrollOffset - lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
+					else if (matchesKey(data, "pageDown")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
+					else if (matchesKey(data, "home")) { scrollOffset = 0; atBottom = false; }
+					else if (matchesKey(data, "end")) { scrollOffset = lastMaxOffset; atBottom = true; }
+					else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
+					else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
+					else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
+					else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
+					else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
+					else if (matchesKey(data, "escape")) {
+						expanded = false;
+					}
+					else if (matchesKey(data, "q") || matchesKey(data, "Q")) { expanded = false; }
+					markDirty();
+					return;
+				}
+
+				if (matchesKey(data, "up") || matchesKey(data, "left")) select(idx - 1);
+				else if (matchesKey(data, "down") || matchesKey(data, "right")) select(idx + 1);
+				else if (matchesKey(data, "pageUp")) select(idx - Math.max(1, Math.floor(lastViewportH / 2)));
+				else if (matchesKey(data, "pageDown")) select(idx + Math.max(1, Math.floor(lastViewportH / 2)));
+				else if (matchesKey(data, "home")) select(0);
+				else if (matchesKey(data, "end")) select(items.length - 1);
+				else if (matchesKey(data, "enter") || matchesKey(data, "space")) { const opening = items[idx]; expanded = true; atBottom = !!opening?.running; scrollOffset = 0; }
+				else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
+				else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
+				else if (matchesKey(data, "q") || matchesKey(data, "Q")) { done(); return; }
+				markDirty();
+			},
+			dispose() {
+				disposed = true;
+				clearInterval(interval);
+				if (renderTimer) clearTimeout(renderTimer);
+			},
+		};
+	});
+	} finally {
+		inspectorOpen = false;
+		updateStatusPanel(ctx);
+	}
+}
+
 	// --- /subagents command -------------------------------------------------------
 	pi.registerCommand("subagents", {
 		description: "Inspect subagent results for the current branch",
@@ -1094,365 +1457,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				ctx.ui.notify("/subagents needs interactive mode", "error");
 				return;
 			}
-			rebuildResults(ctx);
-			inspectorOpen = true;
-			if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
-			// Continue into the inspector even when empty — it shows guidance
-			// Combined live + history inspector. Selection is keyed by a stable `key`
-			// (the subagent id) so an agent finishing mid-view doesn't shift the
-			// cursor when it migrates from activeSubagents to the persisted history.
-			interface InspectItem {
-				key: string;
-				agent: string;
-				subLabel: string;
-				reason?: string;
-				running: boolean;
-				ok: boolean;
-				stuck: boolean;
-				model?: string;
-				durationMs: number;
-				transcript?: TranscriptEntry[];
-				output?: string;
-				errorMessage?: string;
-				streamingText?: string;
-				isStreaming?: boolean;
-			}
-			const buildItems = (): InspectItem[] => {
-				const live = [...activeSubagents.values()];
-				const running = live
-					.filter((s) => s.status === "running" || s.status === "stuck")
-					.sort((a, b) => a.startTime - b.startTime);
-				const completedActive = live
-					.filter((s) => s.status === "done" || s.status === "failed")
-					.sort((a, b) => (a.endTime ?? 0) - (b.endTime ?? 0));
-				const activeIds = new Set(live.map((s) => s.id));
-				const histCompleted = resultHistory.filter((r) => !r.id || !activeIds.has(r.id));
-				const fromStatus = (s: SubagentStatus): InspectItem => ({
-					key: s.id,
-					agent: s.agent,
-					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : (s.reason || s.task),
-					reason: s.reason,
-					running: s.status === "running" || s.status === "stuck",
-					ok: s.status === "done",
-					stuck: s.status === "stuck",
-					durationMs: (s.endTime ?? Date.now()) - s.startTime,
-					transcript: s.transcript,
-					streamingText: s.streamingText,
-					isStreaming: s.isStreaming,
-				});
-				const fromHist = (r: SubagentResultEntry): InspectItem => ({
-					key: r.id ?? `${r.timestamp}-${r.agent}`,
-					agent: r.agent,
-					subLabel: (r.reason || r.task),
-					reason: r.reason,
-					running: false,
-					ok: r.ok,
-					stuck: r.stuck ?? false,
-					model: r.model,
-					durationMs: r.durationMs,
-					transcript: r.transcript,
-					output: r.output,
-					errorMessage: r.errorMessage,
-				});
-				return [...running.map(fromStatus), ...completedActive.map(fromStatus), ...histCompleted.map(fromHist)];
-			};
-
-			try {
-				await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-				let selectedKey: string | null = null;
-				let lastIndex = 0;
-				let initialized = false;
-				let expanded = false;
-				let scrollOffset = 0;
-				let atBottom = true;
-				// Captured during render so the (width-less) handleInput can clamp scrolling.
-				let lastMaxOffset = 0;
-				let lastViewportH = 10;
-				let verbosity = 1; // 0=minimal, 1=normal, 2=verbose
-				let renderPending = false;
-				let renderTimer: ReturnType<typeof setTimeout> | undefined;
-				let disposed = false;
-				let lastInputAt = 0;
-				const markDirty = () => {
-					if (disposed || renderPending) return;
-					renderPending = true;
-					renderTimer = setTimeout(() => {
-						renderPending = false;
-						renderTimer = undefined;
-						if (!disposed) tui.requestRender();
-					}, 33);
-				};
-
-				const glyph = (it: InspectItem): string =>
-					it.stuck ? statusFg(theme, "stuck", "⚠")
-						: it.running ? statusFg(theme, "running", "◌")
-							: it.ok ? statusFg(theme, "done", "✓")
-								: statusFg(theme, "failed", "✗");
-
-				interface TranscriptLine { text: string; bg?: string; }
-				const transcriptLines = (it: InspectItem, innerW: number): TranscriptLine[] => {
-					const lines: TranscriptLine[] = [];
-					const truncate = (s: string, maxW: number) => truncateToWidth(s, Math.max(1, maxW), "…");
-					const wrap = (s: string, indent: string, bg?: string) => {
-						for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push({ text: indent + w, bg });
-					};
-					if (it.transcript && it.transcript.length) {
-						for (const e of it.transcript) {
-							if (e.kind === "assistant") {
-								if (verbosity >= 2) {
-									wrap(theme.fg("text", e.text), "  ");
-								} else if (verbosity === 1) {
-									const previewLines = e.text.split("\n").filter(l => l.trim());
-									const preview = previewLines.slice(0, 4).join("\n");
-									wrap(theme.fg("dim", truncate(preview, innerW * 4)), "  ");
-								}
-								// verbosity 0: skip assistant text entirely
-							} else if (e.kind === "tool-call") {
-								const arg = primaryArg(e.toolName, e.args);
-								const summary = arg ? `${e.toolName ?? e.text} ${arg}` : (e.toolName ?? e.text);
-								lines.push({ text: theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`), bg: "toolPendingBg" });
-							} else if (e.kind === "tool-done") {
-								const arg = primaryArg(e.toolName, e.args);
-								const status = summarizeResult(e.toolName, e.result, e.args);
-								const summary = arg ? `${e.toolName ?? e.text} ${arg} — ${status}` : `${e.toolName ?? e.text} — ${status}`;
-								if (e.isError) {
-									lines.push({ text: theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`), bg: "toolErrorBg" });
-									if (e.result != null) {
-										const preview = typeof e.result === "string" ? e.result : JSON.stringify(e.result);
-										for (const line of preview.split("\n").slice(0, 6)) {
-											lines.push({ text: theme.fg("error", `  ${truncate(line, innerW - 4)}`), bg: "toolErrorBg" });
-										}
-									}
-								} else {
-									lines.push({ text: theme.fg("success", `✓ ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
-								}
-							}
-						}
-						if (lines.length === 0) {
-							lines.push({ text: theme.fg("dim", "  (assistant output hidden — press v)") });
-						}
-					} else if (it.output) {
-						if (verbosity >= 1) wrap(theme.fg("text", it.output), "  ");
-						else lines.push({ text: theme.fg("dim", "  (output available, press v to show)") });
-					} else {
-						lines.push({ text: theme.fg("dim", "  (no transcript recorded)") });
-					}
-					// Show streaming text for running agents
-					if (it.streamingText && it.isStreaming) {
-						lines.push({ text: "" });
-						lines.push({ text: theme.fg("accent", "  streaming:") });
-						const streamLines = it.streamingText.split("\n");
-						const lastLines = streamLines.slice(-5);
-						for (let i = 0; i < lastLines.length; i++) {
-							const cursor = i === lastLines.length - 1 ? "▌" : "";
-							lines.push({ text: theme.fg("text", `  ${truncate(lastLines[i], innerW - 4)}${cursor}`) });
-						}
-					}
-					if (it.errorMessage) {
-						lines.push({ text: "" });
-						wrap(theme.fg("error", `Error: ${it.errorMessage}`), "  ");
-					}
-					return lines;
-				};
-
-				// Coalesce live refreshes with keypress-driven renders. List view refreshes
-				// only while idle so navigation cannot race the periodic update.
-				const interval = setInterval(() => {
-					if (!expanded && Date.now() - lastInputAt < 350) return;
-					const hasLive = activeSubagents.size > 0;
-					rebuildResults(ctx);
-					if (!hasLive && resultHistory.length === 0) return;
-					if (!hasLive && !expanded) return;
-					markDirty();
-				}, 1000);
-
-				return {
-					render(width: number): string[] {
-						const border = (s: string) => tryFg(theme, "panelBorder", "accent", s);
-						const innerW = Math.max(0, width - 2);
-						const hr = "─".repeat(innerW);
-						const rows = tui.terminal?.rows ?? 24;
-						const viewportH = Math.max(4, Math.floor(rows * 0.55));
-						lastViewportH = viewportH;
-						const row = (content: string, bgColor?: string): string => {
-							const clipped = truncateToWidth(content, innerW);
-							const padded = clipped + " ".repeat(Math.max(0, innerW - visibleWidth(clipped)));
-							const inner = bgColor ? theme.bg(bgColor, padded) : padded;
-							return border("│") + inner + border("│");
-						};
-						const out: string[] = [border("┌" + hr + "┐")];
-
-						const items = buildItems();
-						if (items.length === 0) {
-							expanded = false;
-							out.push(row(tryFg(theme, "overlayTitle", "accent", " Subagent Inspector ")));
-							out.push(border("├" + hr + "┤"));
-							out.push(row(theme.fg("dim", "  No subagents yet")));
-							out.push(row(theme.fg("dim", "  Delegated subagent runs will appear here")));
-							out.push(row(theme.fg("dim", "  when you use the subagent tool.")));
-							out.push(row(theme.fg("dim", "  Results are scoped to the current branch.")));
-							for (let i = 0; i < viewportH; i++) out.push(row(""));
-							out.push(border("└" + hr + "┘"));
-							out.push(truncateToWidth(theme.fg("dim", "  r refresh  q close"), width));
-							return out;
-						}
-
-						if (!initialized) {
-							initialized = true;
-							const firstRunning = items.findIndex((i) => i.running);
-							const startIdx = firstRunning !== -1 ? firstRunning : items.length - 1;
-							selectedKey = items[startIdx].key;
-							lastIndex = startIdx;
-						}
-						let idx = items.findIndex((i) => i.key === selectedKey);
-						if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
-						selectedKey = items[idx].key;
-						lastIndex = idx;
-						const cur = items[idx];
-
-						if (expanded) {
-							const model = cur.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model)}`) : "";
-							const statusLabel = cur.running
-								? (cur.stuck ? statusFg(theme, "stuck", " · stuck") : statusFg(theme, "running", " · running"))
-								: cur.ok ? theme.fg("dim", " · done")
-								: statusFg(theme, "failed", " · failed");
-							out.push(row(`${glyph(cur)} ${tryFg(theme, "overlayTitle", "accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${statusLabel}`, "selectedBg"));
-							// Metadata row: task, reason, model
-							const metaParts: string[] = [cur.subLabel];
-							if (cur.reason) metaParts.push(`note: ${cur.reason}`);
-							if (cur.model) metaParts.push(resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model) ?? cur.model);
-							const metaLine = truncateToWidth(metaParts.join(" · "), innerW - 2, "…");
-							out.push(row(theme.fg("dim", `  ${metaLine}`)));
-							out.push(border("├" + hr + "┤"));
-							const lines = transcriptLines(cur, innerW);
-							const maxOffset = Math.max(0, lines.length - viewportH);
-							lastMaxOffset = maxOffset;
-							if (atBottom) scrollOffset = maxOffset;
-							scrollOffset = Math.min(Math.max(scrollOffset, 0), maxOffset);
-							const slice = lines.slice(scrollOffset, scrollOffset + viewportH);
-							for (const l of slice) out.push(row(l.text, l.bg));
-							for (let i = slice.length; i < viewportH; i++) out.push(row(""));
-							for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
-							out.push(border("└" + hr + "┘"));
-							const more: string[] = [];
-							if (scrollOffset > 0) more.push("↑ more");
-							if (scrollOffset < maxOffset) more.push("↓ more");
-							const tail = more.length ? `   ${more.join("  ")}` : "";
-							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Enter back  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q close${tail}`), width));
-							return out;
-						}
-
-						// Collapsed: two sections (running, completed), windowed to the viewport.
-						out.push(row(tryFg(theme, "overlayTitle", "accent", " Subagent Inspector ")));
-						out.push(border("├" + hr + "┤"));
-						const runningCount = items.filter((i) => i.running).length;
-						const listRows: { line: string; itemIdx: number | null; bg?: string }[] = [];
-						let runHdr = false;
-						let doneHdr = false;
-						for (let i = 0; i < items.length; i++) {
-							const it = items[i];
-							if (it.running && !runHdr) {
-								listRows.push({ line: theme.fg("dim", ` Running (${runningCount})`), itemIdx: null });
-								runHdr = true;
-							}
-							if (!it.running && !doneHdr) {
-								if (runHdr) listRows.push({ line: "", itemIdx: null });
-								listRows.push({ line: theme.fg("dim", ` Completed (${items.length - runningCount})`), itemIdx: null });
-								doneHdr = true;
-							}
-							const sel = i === idx;
-							const model = it.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, it.model)}`) : "";
-							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
-							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i, bg: sel ? "selectedBg" : undefined });
-							const subLabel = sel && it.reason ? `${it.subLabel} · note: ${outputPreview(it.reason, 80)}` : it.subLabel;
-							listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i, bg: sel ? "selectedBg" : undefined });
-						}
-						let winStart = 0;
-						if (listRows.length > viewportH) {
-							const selRow = listRows.findIndex((r) => r.itemIdx === idx);
-							winStart = Math.max(0, Math.min(selRow - Math.floor(viewportH / 2), listRows.length - viewportH));
-						}
-						// Adjust to item block boundaries: don't start on a sub-row or end mid-pair
-						while (winStart > 0 && listRows[winStart].itemIdx !== null && listRows[winStart - 1].itemIdx === listRows[winStart].itemIdx) {
-							winStart--;
-						}
-						let winEnd = Math.min(winStart + viewportH, listRows.length);
-						while (winEnd > winStart && winEnd < listRows.length && listRows[winEnd - 1].itemIdx !== null && listRows[winEnd].itemIdx === listRows[winEnd - 1].itemIdx) {
-							winEnd--;
-						}
-						const visibleRows = listRows.slice(winStart, winEnd).slice(0, viewportH);
-						for (const r of visibleRows) out.push(row(r.line, r.bg));
-						for (let i = visibleRows.length; i < viewportH; i++) out.push(row(""));
-						for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
-						out.push(border("└" + hr + "┘"));
-						const listMore: string[] = [];
-						if (winStart > 0) listMore.push("↑ more");
-						if (winEnd < listRows.length) listMore.push("↓ more");
-						const listTail = listMore.length ? `   ${listMore.join("  ")}` : "";
-						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  Enter open  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q close${listTail}`), width));
-						return out;
-					},
-					invalidate() {},
-					handleInput(data: string) {
-						lastInputAt = Date.now();
-						if (matchesKey(data, "ctrl+c")) { done(); return; }
-						const items = buildItems();
-						if (items.length === 0) {
-							if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); markDirty(); }
-							else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
-							return;
-						}
-						let idx = items.findIndex((i) => i.key === selectedKey);
-						if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
-						const select = (n: number) => {
-							idx = Math.min(Math.max(0, n), items.length - 1);
-							selectedKey = items[idx].key;
-							lastIndex = idx;
-						};
-
-						if (expanded) {
-							if (matchesKey(data, "up")) { scrollOffset = Math.max(0, scrollOffset - 1); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "down")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + 1); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "pageUp")) { scrollOffset = Math.max(0, scrollOffset - lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "pageDown")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "home")) { scrollOffset = 0; atBottom = false; }
-							else if (matchesKey(data, "end")) { scrollOffset = lastMaxOffset; atBottom = true; }
-							else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
-							else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
-							else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
-							else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
-							else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
-							else if (matchesKey(data, "escape")) {
-								expanded = false;
-							}
-							else if (matchesKey(data, "q") || matchesKey(data, "Q")) { expanded = false; }
-							markDirty();
-							return;
-						}
-
-						if (matchesKey(data, "up") || matchesKey(data, "left")) select(idx - 1);
-						else if (matchesKey(data, "down") || matchesKey(data, "right")) select(idx + 1);
-						else if (matchesKey(data, "pageUp")) select(idx - Math.max(1, Math.floor(lastViewportH / 2)));
-						else if (matchesKey(data, "pageDown")) select(idx + Math.max(1, Math.floor(lastViewportH / 2)));
-						else if (matchesKey(data, "home")) select(0);
-						else if (matchesKey(data, "end")) select(items.length - 1);
-						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { const opening = items[idx]; expanded = true; atBottom = !!opening?.running; scrollOffset = 0; }
-						else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
-						else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
-						else if (matchesKey(data, "q") || matchesKey(data, "Q")) { done(); return; }
-						markDirty();
-					},
-					dispose() {
-						disposed = true;
-						clearInterval(interval);
-						if (renderTimer) clearTimeout(renderTimer);
-					},
-				};
-			});
-			} finally {
-				inspectorOpen = false;
-				updateStatusPanel(ctx);
-			}
+			await runInspector(ctx);
 		},
 	});
 
@@ -1473,366 +1478,8 @@ export function setupSubagent(pi: ExtensionAPI) {
 				ctx.ui.notify("alt+i needs interactive mode", "error");
 				return;
 			}
-			rebuildResults(ctx);
-			inspectorOpen = true;
-			if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
-			// Continue into the inspector even when empty — it shows guidance
-			// Combined live + history inspector. Selection is keyed by a stable `key`
-			// (the subagent id) so an agent finishing mid-view doesn't shift the
-			// cursor when it migrates from activeSubagents to the persisted history.
-			interface InspectItem {
-				key: string;
-				agent: string;
-				subLabel: string;
-				reason?: string;
-				running: boolean;
-				ok: boolean;
-				stuck: boolean;
-				model?: string;
-				durationMs: number;
-				transcript?: TranscriptEntry[];
-				output?: string;
-				errorMessage?: string;
-				streamingText?: string;
-				isStreaming?: boolean;
-			}
-			const buildItems = (): InspectItem[] => {
-				const live = [...activeSubagents.values()];
-				const running = live
-					.filter((s) => s.status === "running" || s.status === "stuck")
-					.sort((a, b) => a.startTime - b.startTime);
-				const completedActive = live
-					.filter((s) => s.status === "done" || s.status === "failed")
-					.sort((a, b) => (a.endTime ?? 0) - (b.endTime ?? 0));
-				const activeIds = new Set(live.map((s) => s.id));
-				const histCompleted = resultHistory.filter((r) => !r.id || !activeIds.has(r.id));
-				const fromStatus = (s: SubagentStatus): InspectItem => ({
-					key: s.id,
-					agent: s.agent,
-					subLabel: (s.status === "running" || s.status === "stuck") ? (s.progress || s.currentTool || s.task) : (s.reason || s.task),
-					reason: s.reason,
-					running: s.status === "running" || s.status === "stuck",
-					ok: s.status === "done",
-					stuck: s.status === "stuck",
-					durationMs: (s.endTime ?? Date.now()) - s.startTime,
-					transcript: s.transcript,
-					streamingText: s.streamingText,
-					isStreaming: s.isStreaming,
-				});
-				const fromHist = (r: SubagentResultEntry): InspectItem => ({
-					key: r.id ?? `${r.timestamp}-${r.agent}`,
-					agent: r.agent,
-					subLabel: (r.reason || r.task),
-					reason: r.reason,
-					running: false,
-					ok: r.ok,
-					stuck: r.stuck ?? false,
-					model: r.model,
-					durationMs: r.durationMs,
-					transcript: r.transcript,
-					output: r.output,
-					errorMessage: r.errorMessage,
-				});
-				return [...running.map(fromStatus), ...completedActive.map(fromStatus), ...histCompleted.map(fromHist)];
-			};
-
-			try {
-				await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-				let selectedKey: string | null = null;
-				let lastIndex = 0;
-				let initialized = false;
-				let expanded = false;
-				let scrollOffset = 0;
-				let atBottom = true;
-				// Captured during render so the (width-less) handleInput can clamp scrolling.
-				let lastMaxOffset = 0;
-				let lastViewportH = 10;
-				let verbosity = 1; // 0=minimal, 1=normal, 2=verbose
-				let renderPending = false;
-				let renderTimer: ReturnType<typeof setTimeout> | undefined;
-				let disposed = false;
-				let lastInputAt = 0;
-				const markDirty = () => {
-					if (disposed || renderPending) return;
-					renderPending = true;
-					renderTimer = setTimeout(() => {
-						renderPending = false;
-						renderTimer = undefined;
-						if (!disposed) tui.requestRender();
-					}, 33);
-				};
-
-				const glyph = (it: InspectItem): string =>
-					it.stuck ? statusFg(theme, "stuck", "⚠")
-						: it.running ? statusFg(theme, "running", "◌")
-							: it.ok ? statusFg(theme, "done", "✓")
-								: statusFg(theme, "failed", "✗");
-
-				interface TranscriptLine { text: string; bg?: string; }
-				const transcriptLines = (it: InspectItem, innerW: number): TranscriptLine[] => {
-					const lines: TranscriptLine[] = [];
-					const truncate = (s: string, maxW: number) => truncateToWidth(s, Math.max(1, maxW), "…");
-					const wrap = (s: string, indent: string, bg?: string) => {
-						for (const w of wrapTextWithAnsi(s, Math.max(1, innerW - indent.length))) lines.push({ text: indent + w, bg });
-					};
-					if (it.transcript && it.transcript.length) {
-						for (const e of it.transcript) {
-							if (e.kind === "assistant") {
-								if (verbosity >= 2) {
-									wrap(theme.fg("text", e.text), "  ");
-								} else if (verbosity === 1) {
-									const previewLines = e.text.split("\n").filter(l => l.trim());
-									const preview = previewLines.slice(0, 4).join("\n");
-									wrap(theme.fg("dim", truncate(preview, innerW * 4)), "  ");
-								}
-								// verbosity 0: skip assistant text entirely
-							} else if (e.kind === "tool-call") {
-								const arg = primaryArg(e.toolName, e.args);
-								const summary = arg ? `${e.toolName ?? e.text} ${arg}` : (e.toolName ?? e.text);
-								lines.push({ text: theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`), bg: "toolPendingBg" });
-							} else if (e.kind === "tool-done") {
-								const arg = primaryArg(e.toolName, e.args);
-								const status = summarizeResult(e.toolName, e.result, e.args);
-								const summary = arg ? `${e.toolName ?? e.text} ${arg} — ${status}` : `${e.toolName ?? e.text} — ${status}`;
-								if (e.isError) {
-									lines.push({ text: theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`), bg: "toolErrorBg" });
-									if (e.result != null) {
-										const preview = typeof e.result === "string" ? e.result : JSON.stringify(e.result);
-										for (const line of preview.split("\n").slice(0, 6)) {
-											lines.push({ text: theme.fg("error", `  ${truncate(line, innerW - 4)}`), bg: "toolErrorBg" });
-										}
-									}
-								} else {
-									lines.push({ text: theme.fg("success", `✓ ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
-								}
-							}
-						}
-						if (lines.length === 0) {
-							lines.push({ text: theme.fg("dim", "  (assistant output hidden — press v)") });
-						}
-					} else if (it.output) {
-						if (verbosity >= 1) wrap(theme.fg("text", it.output), "  ");
-						else lines.push({ text: theme.fg("dim", "  (output available, press v to show)") });
-					} else {
-						lines.push({ text: theme.fg("dim", "  (no transcript recorded)") });
-					}
-					// Show streaming text for running agents
-					if (it.streamingText && it.isStreaming) {
-						lines.push({ text: "" });
-						lines.push({ text: theme.fg("accent", "  streaming:") });
-						const streamLines = it.streamingText.split("\n");
-						const lastLines = streamLines.slice(-5);
-						for (let i = 0; i < lastLines.length; i++) {
-							const cursor = i === lastLines.length - 1 ? "▌" : "";
-							lines.push({ text: theme.fg("text", `  ${truncate(lastLines[i], innerW - 4)}${cursor}`) });
-						}
-					}
-					if (it.errorMessage) {
-						lines.push({ text: "" });
-						wrap(theme.fg("error", `Error: ${it.errorMessage}`), "  ");
-					}
-					return lines;
-				};
-
-				// Coalesce live refreshes with keypress-driven renders. List view refreshes
-				// only while idle so navigation cannot race the periodic update.
-				const interval = setInterval(() => {
-					if (!expanded && Date.now() - lastInputAt < 350) return;
-					const hasLive = activeSubagents.size > 0;
-					rebuildResults(ctx);
-					if (!hasLive && resultHistory.length === 0) return;
-					if (!hasLive && !expanded) return;
-					markDirty();
-				}, 1000);
-
-				return {
-					render(width: number): string[] {
-						const border = (s: string) => tryFg(theme, "panelBorder", "accent", s);
-						const innerW = Math.max(0, width - 2);
-						const hr = "─".repeat(innerW);
-						const rows = tui.terminal?.rows ?? 24;
-						const viewportH = Math.max(4, Math.floor(rows * 0.55));
-						lastViewportH = viewportH;
-						const row = (content: string, bgColor?: string): string => {
-							const clipped = truncateToWidth(content, innerW);
-							const padded = clipped + " ".repeat(Math.max(0, innerW - visibleWidth(clipped)));
-							const inner = bgColor ? theme.bg(bgColor, padded) : padded;
-							return border("│") + inner + border("│");
-						};
-						const out: string[] = [border("┌" + hr + "┐")];
-
-						const items = buildItems();
-						if (items.length === 0) {
-							expanded = false;
-							out.push(row(tryFg(theme, "overlayTitle", "accent", " Subagent Inspector ")));
-							out.push(border("├" + hr + "┤"));
-							out.push(row(theme.fg("dim", "  No subagents yet")));
-							out.push(row(theme.fg("dim", "  Delegated subagent runs will appear here")));
-							out.push(row(theme.fg("dim", "  when you use the subagent tool.")));
-							out.push(row(theme.fg("dim", "  Results are scoped to the current branch.")));
-							for (let i = 0; i < viewportH; i++) out.push(row(""));
-							out.push(border("└" + hr + "┘"));
-							out.push(truncateToWidth(theme.fg("dim", "  r refresh  q close"), width));
-							return out;
-						}
-
-						if (!initialized) {
-							initialized = true;
-							const firstRunning = items.findIndex((i) => i.running);
-							const startIdx = firstRunning !== -1 ? firstRunning : items.length - 1;
-							selectedKey = items[startIdx].key;
-							lastIndex = startIdx;
-						}
-						let idx = items.findIndex((i) => i.key === selectedKey);
-						if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
-						selectedKey = items[idx].key;
-						lastIndex = idx;
-						const cur = items[idx];
-
-						if (expanded) {
-							const model = cur.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model)}`) : "";
-							const statusLabel = cur.running
-								? (cur.stuck ? statusFg(theme, "stuck", " · stuck") : statusFg(theme, "running", " · running"))
-								: cur.ok ? theme.fg("dim", " · done")
-								: statusFg(theme, "failed", " · failed");
-							out.push(row(`${glyph(cur)} ${tryFg(theme, "overlayTitle", "accent", cur.agent)}${model}${theme.fg("dim", ` ${formatDuration(cur.durationMs)}`)}${statusLabel}`, "selectedBg"));
-							// Metadata row: task, reason, model
-							const metaParts: string[] = [cur.subLabel];
-							if (cur.reason) metaParts.push(`note: ${cur.reason}`);
-							if (cur.model) metaParts.push(resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model) ?? cur.model);
-							const metaLine = truncateToWidth(metaParts.join(" · "), innerW - 2, "…");
-							out.push(row(theme.fg("dim", `  ${metaLine}`)));
-							out.push(border("├" + hr + "┤"));
-							const lines = transcriptLines(cur, innerW);
-							const maxOffset = Math.max(0, lines.length - viewportH);
-							lastMaxOffset = maxOffset;
-							if (atBottom) scrollOffset = maxOffset;
-							scrollOffset = Math.min(Math.max(scrollOffset, 0), maxOffset);
-							const slice = lines.slice(scrollOffset, scrollOffset + viewportH);
-							for (const l of slice) out.push(row(l.text, l.bg));
-							for (let i = slice.length; i < viewportH; i++) out.push(row(""));
-							for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
-							out.push(border("└" + hr + "┘"));
-							const more: string[] = [];
-							if (scrollOffset > 0) more.push("↑ more");
-							if (scrollOffset < maxOffset) more.push("↓ more");
-							const tail = more.length ? `   ${more.join("  ")}` : "";
-							out.push(truncateToWidth(theme.fg("dim", `  ↑↓ scroll  Enter back  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q close${tail}`), width));
-							return out;
-						}
-
-						// Collapsed: two sections (running, completed), windowed to the viewport.
-						out.push(row(tryFg(theme, "overlayTitle", "accent", " Subagent Inspector ")));
-						out.push(border("├" + hr + "┤"));
-						const runningCount = items.filter((i) => i.running).length;
-						const listRows: { line: string; itemIdx: number | null; bg?: string }[] = [];
-						let runHdr = false;
-						let doneHdr = false;
-						for (let i = 0; i < items.length; i++) {
-							const it = items[i];
-							if (it.running && !runHdr) {
-								listRows.push({ line: theme.fg("dim", ` Running (${runningCount})`), itemIdx: null });
-								runHdr = true;
-							}
-							if (!it.running && !doneHdr) {
-								if (runHdr) listRows.push({ line: "", itemIdx: null });
-								listRows.push({ line: theme.fg("dim", ` Completed (${items.length - runningCount})`), itemIdx: null });
-								doneHdr = true;
-							}
-							const sel = i === idx;
-							const model = it.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, it.model)}`) : "";
-							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
-							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i, bg: sel ? "selectedBg" : undefined });
-							const subLabel = sel && it.reason ? `${it.subLabel} · note: ${outputPreview(it.reason, 80)}` : it.subLabel;
-							listRows.push({ line: theme.fg("dim", `    ${subLabel}`), itemIdx: i, bg: sel ? "selectedBg" : undefined });
-						}
-						let winStart = 0;
-						if (listRows.length > viewportH) {
-							const selRow = listRows.findIndex((r) => r.itemIdx === idx);
-							winStart = Math.max(0, Math.min(selRow - Math.floor(viewportH / 2), listRows.length - viewportH));
-						}
-						// Adjust to item block boundaries: don't start on a sub-row or end mid-pair
-						while (winStart > 0 && listRows[winStart].itemIdx !== null && listRows[winStart - 1].itemIdx === listRows[winStart].itemIdx) {
-							winStart--;
-						}
-						let winEnd = Math.min(winStart + viewportH, listRows.length);
-						while (winEnd > winStart && winEnd < listRows.length && listRows[winEnd - 1].itemIdx !== null && listRows[winEnd].itemIdx === listRows[winEnd - 1].itemIdx) {
-							winEnd--;
-						}
-						const visibleRows = listRows.slice(winStart, winEnd).slice(0, viewportH);
-						for (const r of visibleRows) out.push(row(r.line, r.bg));
-						for (let i = visibleRows.length; i < viewportH; i++) out.push(row(""));
-						for (let i = out.length; i < 7 + viewportH; i++) out.push(row(""));
-						out.push(border("└" + hr + "┘"));
-						const listMore: string[] = [];
-						if (winStart > 0) listMore.push("↑ more");
-						if (winEnd < listRows.length) listMore.push("↓ more");
-						const listTail = listMore.length ? `   ${listMore.join("  ")}` : "";
-						out.push(truncateToWidth(theme.fg("dim", `  ↑↓ select  Enter open  r refresh  v ${verbosity === 0 ? 'minimal' : verbosity === 1 ? 'normal' : 'verbose'}  q close${listTail}`), width));
-						return out;
-					},
-					invalidate() {},
-					handleInput(data: string) {
-						lastInputAt = Date.now();
-						if (matchesKey(data, "ctrl+c")) { done(); return; }
-						const items = buildItems();
-						if (items.length === 0) {
-							if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); markDirty(); }
-							else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
-							return;
-						}
-						let idx = items.findIndex((i) => i.key === selectedKey);
-						if (idx === -1) idx = Math.min(Math.max(lastIndex, 0), items.length - 1);
-						const select = (n: number) => {
-							idx = Math.min(Math.max(0, n), items.length - 1);
-							selectedKey = items[idx].key;
-							lastIndex = idx;
-						};
-
-						if (expanded) {
-							if (matchesKey(data, "up")) { scrollOffset = Math.max(0, scrollOffset - 1); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "down")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + 1); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "pageUp")) { scrollOffset = Math.max(0, scrollOffset - lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "pageDown")) { scrollOffset = Math.min(lastMaxOffset, scrollOffset + lastViewportH); atBottom = scrollOffset >= lastMaxOffset; }
-							else if (matchesKey(data, "home")) { scrollOffset = 0; atBottom = false; }
-							else if (matchesKey(data, "end")) { scrollOffset = lastMaxOffset; atBottom = true; }
-							else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
-							else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
-							else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
-							else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
-							else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
-							else if (matchesKey(data, "escape")) {
-								expanded = false;
-							}
-							else if (matchesKey(data, "q") || matchesKey(data, "Q")) { expanded = false; }
-							markDirty();
-							return;
-						}
-
-						if (matchesKey(data, "up") || matchesKey(data, "left")) select(idx - 1);
-						else if (matchesKey(data, "down") || matchesKey(data, "right")) select(idx + 1);
-						else if (matchesKey(data, "pageUp")) select(idx - Math.max(1, Math.floor(lastViewportH / 2)));
-						else if (matchesKey(data, "pageDown")) select(idx + Math.max(1, Math.floor(lastViewportH / 2)));
-						else if (matchesKey(data, "home")) select(0);
-						else if (matchesKey(data, "end")) select(items.length - 1);
-						else if (matchesKey(data, "enter") || matchesKey(data, "space")) { const opening = items[idx]; expanded = true; atBottom = !!opening?.running; scrollOffset = 0; }
-						else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
-						else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
-						else if (matchesKey(data, "q") || matchesKey(data, "Q")) { done(); return; }
-						markDirty();
-					},
-					dispose() {
-						disposed = true;
-						clearInterval(interval);
-						if (renderTimer) clearTimeout(renderTimer);
-					},
-				};
-			});
-		} finally {
-			inspectorOpen = false;
-			updateStatusPanel(ctx);
-		}
-	},
-});
+			await runInspector(ctx);
+		},
+	});
 }
 
