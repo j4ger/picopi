@@ -417,13 +417,67 @@ const primaryArg = (tool?: string, args?: any): string => {
 	}
 };
 
-const summarizeResult = (tool?: string, result?: any): string => {
+const summarizeResult = (tool?: string, result?: any, args?: any): string => {
 	if (result == null) return "ok";
+
+	// For read tool: show path with line range
+	if (tool === "read") {
+		const filePath = args?.path ?? "";
+		if (!filePath) return result.error ? "error" : "ok";
+		if (result.error) return filePath;
+		let range = "";
+		if (args?.offset != null && args?.limit != null) {
+			range = ` L${args.offset}-${args.offset + args.limit}`;
+		} else if (args?.offset != null) {
+			range = ` L${args.offset}+`;
+		} else if (args?.limit != null) {
+			range = ` L1-${args.limit}`;
+		}
+		return `${filePath}${range}`;
+	}
+
+	// For edit tool: show path
+	if (tool === "edit") {
+		const filePath = args?.path ?? "";
+		return filePath || "ok";
+	}
+
+	// For bash tool: command preview + exit code if non-zero
+	if (tool === "bash") {
+		const cmd = args?.command ?? "";
+		let preview = cmd.split("\n")[0].slice(0, 50);
+		if (cmd.length > 50) preview += "…";
+		if (result?.exitCode != null && result.exitCode !== 0) {
+			return `${preview} (exit ${result.exitCode})`;
+		}
+		return preview || "ok";
+	}
+
+	// Fallback: existing logic for other tools
 	if (typeof result === "string") return result.length > 60 ? result.slice(0, 60) + "…" : result;
 	if (typeof result === "object") {
 		if (result.exitCode != null) return `exit ${result.exitCode}`;
 		if (result.lineCount != null) return `${result.lineCount} lines`;
 		if (result.error) return String(result.error).slice(0, 60);
+		// Read tool results
+		if (result.content != null && typeof result.content === "string") {
+			const preview = result.content.split("\n")[0].slice(0, 50);
+			return result.content.length > 50 ? `${preview}… (${result.content.length} chars)` : preview;
+		}
+		// Edit tool results
+		if (result.success != null) return result.success ? "ok" : "failed";
+		// Bash tool results with stdout
+		if (result.stdout != null && typeof result.stdout === "string") {
+			const preview = result.stdout.split("\n")[0].slice(0, 50);
+			return result.stdout.length > 50 ? `${preview}… (${result.stdout.length} chars)` : preview;
+		}
+		// Fallback: use JSON.stringify instead of String()
+		try {
+			const json = JSON.stringify(result);
+			return json.length > 60 ? json.slice(0, 60) + "…" : json;
+		} catch {
+			return "[object]";
+		}
 	}
 	return String(result).slice(0, 60);
 };
@@ -1159,7 +1213,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 								lines.push({ text: theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`), bg: "toolPendingBg" });
 							} else if (e.kind === "tool-done") {
 								const arg = primaryArg(e.toolName, e.args);
-								const status = summarizeResult(e.toolName, e.result);
+								const status = summarizeResult(e.toolName, e.result, e.args);
 								const summary = arg ? `${e.toolName ?? e.text} ${arg} — ${status}` : `${e.toolName ?? e.text} — ${status}`;
 								if (e.isError) {
 									lines.push({ text: theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`), bg: "toolErrorBg" });
@@ -1170,7 +1224,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 										}
 									}
 								} else {
-									lines.push({ text: theme.fg("success", `• ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
+									lines.push({ text: theme.fg("success", `✓ ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
 								}
 							}
 						}
@@ -1538,7 +1592,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 								lines.push({ text: theme.fg("accent", `→ ${truncate(summary, innerW - 2)}`), bg: "toolPendingBg" });
 							} else if (e.kind === "tool-done") {
 								const arg = primaryArg(e.toolName, e.args);
-								const status = summarizeResult(e.toolName, e.result);
+								const status = summarizeResult(e.toolName, e.result, e.args);
 								const summary = arg ? `${e.toolName ?? e.text} ${arg} — ${status}` : `${e.toolName ?? e.text} — ${status}`;
 								if (e.isError) {
 									lines.push({ text: theme.fg("error", `✗ ${truncate(summary, innerW - 2)}`), bg: "toolErrorBg" });
@@ -1549,7 +1603,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 										}
 									}
 								} else {
-									lines.push({ text: theme.fg("success", `• ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
+									lines.push({ text: theme.fg("success", `✓ ${truncate(summary, innerW - 2)}`), bg: "toolSuccessBg" });
 								}
 							}
 						}
