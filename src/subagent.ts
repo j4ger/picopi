@@ -17,7 +17,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn } from "./config.ts";
+import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn, resolveModelDisplayName } from "./config.ts";
 
 // Constants
 
@@ -118,16 +118,6 @@ interface SubagentStatus {
 	transcript?: TranscriptEntry[];
 	streamingText?: string;
 	isStreaming?: boolean;
-}
-
-interface SubagentCompleteDetails {
-	agent: string;
-	task: string;
-	reason?: string;
-	ok: boolean;
-	model?: string;
-	durationMs: number;
-	preview: string;
 }
 
 interface SubagentResultEntry {
@@ -271,6 +261,8 @@ function isModelError(r: RunResult): boolean {
 	if (r.stopReason === "error" && !r.exitCode) return true;
 	return false;
 }
+
+
 
 // Status Panel
 
@@ -700,7 +692,10 @@ async function runAgent(
 						const msg = ev.message as Message;
 						base.messages.push(msg);
 						if (msg.role === "assistant") {
-							if (!base.model && msg.model) base.model = msg.model;
+							if (!base.model && msg.model) {
+							const provider = (msg as any).provider;
+							base.model = provider ? `${provider}/${msg.model}` : msg.model;
+						}
 							if (msg.stopReason) base.stopReason = msg.stopReason;
 							if (msg.errorMessage) base.errorMessage = msg.errorMessage;
 							const text = msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("");
@@ -823,12 +818,13 @@ async function mapLimit<I, O>(items: I[], limit: number, fn: (i: I, idx: number)
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Agent name" }),
 	task: Type.String({ description: "Task for the agent" }),
+	reason: Type.String({ description: "UI-only metadata for the status panel; the subagent cannot see it" }),
 });
 const Params = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task (single mode)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel: array of {agent, task} (max 6)" })),
-	reason: Type.Optional(Type.String({ description: "UI-only metadata for the status panel; the subagent cannot see it" })),
+	reason: Type.Optional(Type.String({ description: "UI-only metadata for the status panel; the subagent cannot see it. Required for single-mode calls (parallel mode uses per-task reason)." })),
 	timeout: Type.Optional(Type.Number({ description: `Inactivity timeout in seconds; subagent killed if it emits no events for this long (default: ${DEFAULT_TIMEOUT})` })),
 });
 
@@ -870,24 +866,6 @@ export function setupSubagent(pi: ExtensionAPI) {
 		if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
 	});
 
-	pi.registerMessageRenderer("subagent-complete", (message, _opts, theme) => {
-		const d = message.details as SubagentCompleteDetails | undefined;
-		if (!d) return new Text(String(message.content), 0, 0);
-		const icon = d.ok ? statusFg(theme, "done", "✓") : statusFg(theme, "failed", "✗");
-		const agent = theme.bold(theme.fg("accent", d.agent));
-		const dur = theme.fg("dim", formatDuration(d.durationMs));
-		const model = d.model ? theme.fg("dim", ` ${d.model}`) : "";
-		let text = `${icon} ${agent}${model} ${dur}`;
-		if (d.preview) {
-			const previewLine = d.ok
-				? theme.fg("dim", d.preview)
-				: statusFg(theme, "failed", `✗ ${d.preview}`);
-			text += `\n${previewLine}`;
-		}
-		if (d.reason) text += `\n${theme.fg("dim", `note: ${outputPreview(d.reason, 100)}`)}`;
-		return new Text(text, 1, 0);
-	});
-
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -900,7 +878,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 		promptSnippet: "Delegate to specialist subagents",
 		promptGuidelines: [
 			"Delegate by default: planner=design/planning, explorer=recon, fixer=implementation, auditor=review, web-searcher=research.",
-			"Optional `reason` is UI-only metadata; the subagent cannot see it.",
+			"Required for all calls (single mode: top-level reason; parallel mode: per-task reason). `reason` is UI-only metadata; the subagent cannot see it.",
 			"Fixer tasks: one concrete concern, ~1-3 files; split or plan first if larger.",
 			"Parallel { tasks: [...] } only for independent work.",
 		],
@@ -938,7 +916,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const batchId = startSubagentBatch();
 				const sids = params.tasks!.map((t, i) => {
 					const sid = `par-${i}-${Date.now()}`;
-					trackAgent(sid, batchId, t.agent, t.task, timeout, params.reason);
+					trackAgent(sid, batchId, t.agent, t.task, timeout, t.reason);
 					return sid;
 				});
 
@@ -947,7 +925,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const concurrency = cfg.concurrency ?? DEFAULT_CONCURRENCY;
 
 				const results = await mapLimit(params.tasks!, concurrency, async (t, i) => {
-					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout, params.reason);
+					const result = await runAgent(ctx.cwd, agents, t.agent, t.task, signal, sids[i], timeout, t.reason);
 					completed++;
 
 					onUpdate?.({
@@ -980,17 +958,6 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const r = await runAgent(ctx.cwd, agents, params.agent!, params.task!, signal, sid, timeout, params.reason);
 				const isError = failed(r);
 
-				pi.sendMessage({
-					customType: "subagent-complete",
-					content: `${params.agent} ${r.stuck ? "timeout" : isError ? "failed" : "done"}`,
-					display: true,
-					details: {
-						agent: params.agent!, task: params.task!, reason: params.reason, ok: !isError,
-						model: r.model, durationMs: Date.now() - startMs,
-						preview: outputPreview(output(r)),
-					} satisfies SubagentCompleteDetails,
-				});
-
 				persistResult(pi, r, Date.now() - startMs, sid);
 
 				if (isError) {
@@ -999,16 +966,6 @@ export function setupSubagent(pi: ExtensionAPI) {
 				}
 				return { content: [{ type: "text", text: capOutput(finalOutput(r.messages) || "(no output)") }], details: { results: [r] } };
 			} catch (e) {
-				pi.sendMessage({
-					customType: "subagent-complete",
-					content: `${params.agent} crashed`,
-					display: true,
-					details: {
-						agent: params.agent!, task: params.task!, reason: params.reason, ok: false,
-						durationMs: Date.now() - startMs,
-						preview: e instanceof Error ? e.message : String(e),
-					} satisfies SubagentCompleteDetails,
-				});
 				trackComplete(sid, false);
 				pi.appendEntry("subagent-result", {
 					id: sid,
@@ -1057,7 +1014,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 				const statusTag = r.stuck ? statusFg(theme, "stuck", " timeout")
 					: failed(r) ? statusFg(theme, "failed", " failed")
 					: theme.fg("dim", " done");
-				const head = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${r.model ? theme.fg("dim", ` ${r.model}`) : ""}`;
+				const head = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${r.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, r.model)}`) : ""}`;
 				if (expanded) {
 					c.addChild(new Text(head, 0, 0));
 					if (r.stuck) c.addChild(new Text(statusFg(theme, "stuck", "Provider stopped responding (timeout)"), 0, 0));
@@ -1300,7 +1257,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						const cur = items[idx];
 
 						if (expanded) {
-							const model = cur.model ? theme.fg("dim", ` ${cur.model}`) : "";
+							const model = cur.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model)}`) : "";
 							const statusLabel = cur.running
 								? (cur.stuck ? statusFg(theme, "stuck", " · stuck") : statusFg(theme, "running", " · running"))
 								: cur.ok ? theme.fg("dim", " · done")
@@ -1309,7 +1266,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							// Metadata row: task, reason, model
 							const metaParts: string[] = [cur.subLabel];
 							if (cur.reason) metaParts.push(`note: ${cur.reason}`);
-							if (cur.model) metaParts.push(cur.model);
+							if (cur.model) metaParts.push(resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model) ?? cur.model);
 							const metaLine = truncateToWidth(metaParts.join(" · "), innerW - 2, "…");
 							out.push(row(theme.fg("dim", `  ${metaLine}`)));
 							out.push(border("├" + hr + "┤"));
@@ -1350,7 +1307,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 								doneHdr = true;
 							}
 							const sel = i === idx;
-							const model = it.model ? theme.fg("dim", ` ${it.model}`) : "";
+							const model = it.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, it.model)}`) : "";
 							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
 							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i, bg: sel ? "selectedBg" : undefined });
 							const subLabel = sel && it.reason ? `${it.subLabel} · note: ${outputPreview(it.reason, 80)}` : it.subLabel;
@@ -1679,7 +1636,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 						const cur = items[idx];
 
 						if (expanded) {
-							const model = cur.model ? theme.fg("dim", ` ${cur.model}`) : "";
+							const model = cur.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model)}`) : "";
 							const statusLabel = cur.running
 								? (cur.stuck ? statusFg(theme, "stuck", " · stuck") : statusFg(theme, "running", " · running"))
 								: cur.ok ? theme.fg("dim", " · done")
@@ -1688,7 +1645,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 							// Metadata row: task, reason, model
 							const metaParts: string[] = [cur.subLabel];
 							if (cur.reason) metaParts.push(`note: ${cur.reason}`);
-							if (cur.model) metaParts.push(cur.model);
+							if (cur.model) metaParts.push(resolveModelDisplayName(extensionCtx?.modelRegistry, cur.model) ?? cur.model);
 							const metaLine = truncateToWidth(metaParts.join(" · "), innerW - 2, "…");
 							out.push(row(theme.fg("dim", `  ${metaLine}`)));
 							out.push(border("├" + hr + "┤"));
@@ -1729,7 +1686,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 								doneHdr = true;
 							}
 							const sel = i === idx;
-							const model = it.model ? theme.fg("dim", ` ${it.model}`) : "";
+							const model = it.model ? theme.fg("dim", ` ${resolveModelDisplayName(extensionCtx?.modelRegistry, it.model)}`) : "";
 							const prefix = sel ? theme.fg("accent", "▸ ") : "  ";
 							listRows.push({ line: `${prefix}${glyph(it)} ${theme.fg(sel ? "accent" : "muted", it.agent)}${model}${theme.fg("dim", ` ${formatDuration(it.durationMs)}`)}`, itemIdx: i, bg: sel ? "selectedBg" : undefined });
 							const subLabel = sel && it.reason ? `${it.subLabel} · note: ${outputPreview(it.reason, 80)}` : it.subLabel;

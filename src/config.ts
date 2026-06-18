@@ -262,6 +262,37 @@ export function resolveModelChainForSpawn(cfg: PicopiConfig, alias: string): str
 	return result;
 }
 
+/**
+ * Resolve a raw model ID to its friendly display name using the model registry.
+ * Returns the raw ID if no friendly name is found.
+ */
+export function resolveModelDisplayName(
+	modelRegistry: any,
+	rawModelId: string | undefined,
+): string | undefined {
+	if (!rawModelId || !modelRegistry) return rawModelId;
+	try {
+		// pi's model registry has a find() method that takes provider and modelId
+		// Try provider/modelId format first (precise lookup)
+		const slashIdx = rawModelId.indexOf("/");
+		if (slashIdx > 0) {
+			const provider = rawModelId.slice(0, slashIdx);
+			const modelId = rawModelId.slice(slashIdx + 1);
+			const found = modelRegistry.find?.(provider, modelId);
+			if (found?.name) return found.name;
+		}
+		// Fallback: try bare model ID match
+		const models = modelRegistry.getAll?.();
+		if (models) {
+			const found = models.find((m: any) => m.id === rawModelId);
+			if (found?.name) return found.name;
+		}
+	} catch {
+		/* registry lookup failed, fall through */
+	}
+	return rawModelId;
+}
+
 export interface ValidationIssue {
 	spec: string;
 	reason: "not-found" | "no-auth" | "malformed";
