@@ -325,7 +325,7 @@ function updateStatusPanel(context?: any) {
 
 				const prefix = theme.fg("dim", "▸ Subagents");
 				const countSection = parts.length > 0 ? theme.fg("dim", "  ") + parts.join(theme.fg("dim", " ")) : "";
-				const keyHint = theme.fg("dim", " │ alt+s");
+				const keyHint = theme.fg("dim", " │ alt+s │ alt+i");
 				const keyHintW = visibleWidth(keyHint);
 
 				// Most urgent agent for status: stuck > failed > running
@@ -353,7 +353,7 @@ function updateStatusPanel(context?: any) {
 
 			// Expanded: compact list of active subagents, capped to ~12 lines
 			const lines: string[] = [];
-			lines.push(tryFg(theme, "overlayTitle", "accent", "▾ Subagents") + "  " + theme.fg("dim", "[alt+s] fold · [/subagents]"));
+			lines.push(tryFg(theme, "overlayTitle", "accent", "▾ Subagents") + "  " + theme.fg("dim", "[alt+s] fold · [alt+i] inspect"));
 
 			const sorted = [
 				...all.filter(s => s.status === "stuck"),
