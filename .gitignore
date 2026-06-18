@@ -148,3 +148,7 @@ result
 # pi runtime secrets, wherever they land outside the repo's agent/ resources:
 /**/auth.json
 models.local.json
+
+# picopi agent-generated plan files
+.picopi/plans/
+PLAN.md

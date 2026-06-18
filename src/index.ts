@@ -10,6 +10,7 @@ import { configPath, getActivePreset, listPresets, loadConfig, resolveChain, set
 import { applyOrchestrator, setupOrchestrator } from "./orchestrator.ts";
 import { setCurrentModel, getCurrentAlias, getCurrentModelSpec, findInChain, setupFallback } from "./fallback.ts";
 import { clearPicopiFooterNote, setupFooter } from "./footer.ts";
+import { setupPlans } from "./plans.ts";
 import { setupSubagent } from "./subagent.ts";
 import { setupCaption } from "./caption.ts";
 import { setupTodo } from "./todo.ts";
@@ -42,6 +43,7 @@ function showBoxedOverlay(ctx: ExtensionCommandContext, lines: string[]): Promis
 }
 
 export default function (pi: ExtensionAPI) {
+	setupPlans(pi);
 	setupFooter(pi);
 	setupOrchestrator(pi);
 	setupFallback(pi);
