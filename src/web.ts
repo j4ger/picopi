@@ -143,18 +143,22 @@ function ipv4FromMappedIPv6(ip: string): string | undefined {
  */
 function createLookup(hostname: string) {
 	const safeHostname = normalizeHost(hostname);
-	return (_host: string, opts: unknown, cb: (err: Error | null, address?: string, family?: number) => void) => {
+	// Node.js http/https calls lookup(hostname, opts, cb) where opts may contain
+	// { all: true }. When all=true, emitLookup expects the callback to receive
+	// an array of LookupAddress objects, not (address, family) scalars.
+	return (_host: string, opts: { all?: boolean; family?: number }, cb: (err: Error | null, address?: string | dns.LookupAddress[], family?: number) => void) => {
+		const wantAll = !!opts?.all;
 		// IP literal — validate directly without DNS
 		if (net.isIPv4(safeHostname)) {
 			try { unsafeIPv4(safeHostname); } catch (e) { return cb(e as Error); }
-			return cb(null, safeHostname, 4);
+			return wantAll ? cb(null, [{ address: safeHostname, family: 4 }]) : cb(null, safeHostname, 4);
 		}
 		if (net.isIPv6(safeHostname)) {
 			try { unsafeIPv6(safeHostname); } catch (e) { return cb(e as Error); }
-			return cb(null, safeHostname, 6);
+			return wantAll ? cb(null, [{ address: safeHostname, family: 6 }]) : cb(null, safeHostname, 6);
 		}
 		// Resolve hostname and validate every address
-		const familyHint = (opts as { family?: number })?.family ?? 0;
+		const familyHint = opts?.family ?? 0;
 		const lookupOptions: dns.LookupOptions = familyHint === 4 || familyHint === 6
 			? { family: familyHint }
 			: { all: true, verbatim: true };
@@ -176,9 +180,13 @@ function createLookup(hostname: string) {
 					return cb(e as Error);
 				}
 			}
-			// Return the first valid address — the connection is pinned to this IP
-			const first = entries[0];
-			cb(null, first.address, first.family);
+			// Return matching format: array when all=true, scalar otherwise
+			if (wantAll) {
+				cb(null, entries as dns.LookupAddress[]);
+			} else {
+				const first = entries[0];
+				cb(null, first.address, first.family);
+			}
 		});
 	};
 }
