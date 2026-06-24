@@ -49,16 +49,27 @@ Inside picopi, run `/login` and pick your provider (OAuth or API key). See [pi's
 ### Configure
 
 The installer seeds a full `~/.config/picopi/config.json`.
-It ships with `pro` and `flash` aliases pointing at sensible defaults:
+It ships with five semantic aliases pointing at sensible defaults:
 
 ```jsonc
 {
   "aliases": {
-    "pro":   ["google/gemini-2.5-pro",   "anthropic/claude-opus-4-5"],
-    "flash": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5"]
+    "strong":   ["google/gemini-2.5-pro",     "anthropic/claude-opus-4-5",    "openai/gpt-4o"],
+    "balanced": ["google/gemini-2.5-flash",   "anthropic/claude-sonnet-4-5",  "openai/gpt-4-turbo"],
+    "fast":     ["anthropic/claude-haiku-4-5", "openai/gpt-3.5-turbo",         "qwen/qwen2.5-coder"],
+    "cheap":    ["google/gemini-2.5-flash",   "anthropic/claude-haiku-4-5"],
+    "orche":    ["google/gemini-2.5-flash",   "anthropic/claude-haiku-4-5"]
   }
 }
 ```
+
+| Alias | Purpose | Example models |
+|-------|---------|----------------|
+| `strong` | Highest-quality reasoning | Claude Opus, GPT-4, DeepSeek V3 |
+| `balanced` | Good coding, reasonable cost | Claude Sonnet, GPT-4-turbo, DeepSeek Coder V2 |
+| `fast` | Fast/cheap exploration | Claude Haiku, GPT-3.5-turbo, Qwen-2.5 |
+| `cheap` | Cheapest for simple tasks | Claude Haiku, Gemini Flash |
+| `orche` | Fast routing for orchestrator | Gemini Flash, Claude Haiku |
 
 You can run `/picopi` to verify every role resolves.
 
@@ -102,8 +113,8 @@ Config:
 ```jsonc
 {
   "agents": {
-    "explorer": { "model": "flash", "timeout": 90 },
-    "planner":  { "model": "pro",   "timeout": 180 }
+    "explorer": { "model": "fast",   "timeout": 90 },
+    "planner":  { "model": "strong", "timeout": 180 }
   }
 }
 ```
@@ -128,23 +139,27 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
 
 ```jsonc
 {
-  "orchestrator": { "model": "flash", "thinking": "medium" },
+  "orchestrator": { "model": "orche",    "thinking": "low" },
 
   "agents": {
-    "planner":      { "model": "pro",   "thinking": "xhigh",  "timeout": 600 },
-    "explorer":     { "model": "flash", "thinking": "low",    "timeout": 300 },
-    "fixer":        { "model": "flash", "thinking": "medium", "timeout": 180 },
-    "auditor":      { "model": "pro",   "thinking": "high",   "timeout": 300 },
-    "web-searcher": { "model": "flash", "thinking": "low",    "timeout": 300 }
+    "planner":      { "model": "strong",   "thinking": "high",   "timeout": 600 },
+    "auditor":      { "model": "strong",   "thinking": "high",   "timeout": 300 },
+    "fixer":        { "model": "balanced", "thinking": "medium", "timeout": 300 },
+    "explorer":     { "model": "fast",     "thinking": "low",    "timeout": 300 },
+    "web-searcher": { "model": "fast",     "thinking": "low",    "timeout": 300 }
   },
 
   "aliases": {
-    "pro":   ["google/gemini-2.5-pro",   "anthropic/claude-opus-4-5"],
-    "flash": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5"]
+    "strong":   ["google/gemini-2.5-pro",     "anthropic/claude-opus-4-5"],
+    "balanced": ["google/gemini-2.5-flash",   "anthropic/claude-sonnet-4-5"],
+    "fast":     ["anthropic/claude-haiku-4-5", "openai/gpt-3.5-turbo"],
+    "cheap":    ["google/gemini-2.5-flash",   "anthropic/claude-haiku-4-5"],
+    "orche":    ["google/gemini-2.5-flash",   "anthropic/claude-haiku-4-5"]
   },
 
-  "compaction": { "model": "flash" },
-  "webSearch":  { "provider": "auto" }
+  "compaction": { "model": "cheap" },
+  "webSearch":  { "provider": "auto" },
+  "title-maker": { "model": "cheap", "thinking": "off" }
 }
 ```
 
@@ -154,6 +169,32 @@ You are a code reviewer. Focus on correctness, edge cases, and security.
 - **Thinking** — `off` → `minimal` → `low` → `medium` → `high` → `xhigh`
 - **Timeout** — seconds before watchdog kills a stuck agent
 - **Compaction** — optional cheaper model for context summarization; falls back to the session model if unset/unavailable.
+- **title-maker** — model used to generate conversation titles. Defaults to the `cheap` alias if unset.
+
+#### Role-to-alias mapping
+
+| Role | Alias | Thinking | Timeout |
+|------|-------|----------|---------|
+| `planner` | `strong` | high | 600s |
+| `auditor` | `strong` | high | 300s |
+| `fixer` | `balanced` | medium | 300s |
+| `explorer` | `fast` | low | 300s |
+| `web-searcher` | `fast` | low | 300s |
+| `compaction` | `cheap` | — | — |
+| `title-maker` | `cheap` | off | — |
+| `orchestrator` | `orche` | low | — |
+
+#### Migrating from older configs
+
+The previous `pro`/`flash`/`lite` aliases were renamed to be more descriptive:
+
+| Old alias | New alias |
+|-----------|-----------|
+| `pro` | `strong` |
+| `flash` | `balanced` |
+| `lite` | `fast` |
+| `orche` | `orche` (unchanged) |
+| *(new)* | `cheap` |
 
 ### Runtime fallback
 
@@ -168,13 +209,13 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 ```jsonc
 {
   "aliases": {
-    "pro":        ["google/gemini-2.5-pro",   "anthropic/claude-opus-4-5"],
-    "pro@fast":   ["google/gemini-2.5-flash"],
-    "pro@local":  ["ollama/llama3.3:70b"],
+    "strong":        ["google/gemini-2.5-pro",   "anthropic/claude-opus-4-5"],
+    "strong@fast":   ["google/gemini-2.5-flash"],
+    "strong@local":  ["ollama/llama3.3:70b"],
 
-    "flash":      ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5"],
-    "flash@fast": ["google/gemini-2.5-flash"],
-    "flash@local":["ollama/llama3.3:70b"]
+    "balanced":      ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5"],
+    "balanced@fast": ["google/gemini-2.5-flash"],
+    "balanced@local":["ollama/llama3.3:70b"]
   }
 }
 ```

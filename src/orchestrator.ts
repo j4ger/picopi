@@ -9,7 +9,7 @@
  * so the behaviour is never a mystery and the model is only displayed once.
  */
 
-import { complete } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { VERSION as PI_VERSION, convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
 import { type ModelRegistryLike, type PicopiConfig, loadConfig, resolveRoleModel, validateAllResolutions } from "./config.ts";
@@ -132,13 +132,14 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 		// Bound compaction wall-clock (a hung cheap model shouldn't stall the
 		// session); chain the agent's abort signal with a timeout. Set up only once
 		// we're committed to the model call, and always torn down in `finally`.
+		const compactionTimeoutMs = cfg.compaction?.timeout ? cfg.compaction.timeout * 1000 : COMPACT_TIMEOUT_MS;
 		const ctrl = new AbortController();
 		const onAbort = () => ctrl.abort();
 		signal.addEventListener("abort", onAbort, { once: true });
-		const timer = setTimeout(() => ctrl.abort(), COMPACT_TIMEOUT_MS);
+		const timer = setTimeout(() => ctrl.abort(), compactionTimeoutMs);
 
 		try {
-			const response = await complete(
+			const response = await completeSimple(
 				resolved.model as object,
 				{
 					messages: [
@@ -160,7 +161,7 @@ ${conversationText}
 						},
 					],
 				},
-				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal: ctrl.signal },
+				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal: ctrl.signal, reasoning: cfg.compaction?.thinking },
 			);
 
 			const summary = response.content

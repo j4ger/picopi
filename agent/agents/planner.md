@@ -26,11 +26,12 @@ What must be true for feasibility to hold. Call out unverified claims.
 Blockers, unknowns, preconditions, external dependencies.
 
 ### Next steps if viable
-Concrete actions (sherlock tasks, spike, prototype) if moving forward.
+Concrete actions (explorer recon tasks, spike, prototype) if moving forward.
 
 ---
 
 ## Implementation planning mode
+Use this mode when the user needs a concrete plan with task breakdown, file list, and risks.
 
 ## Goal
 One sentence.

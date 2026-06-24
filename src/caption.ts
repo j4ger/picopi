@@ -40,16 +40,16 @@ function extractText(msg: any): string {
 
 async function generateCaption(ctx: any, userText: string, assistantText: string): Promise<string | null> {
 	const cfg = loadConfig();
-	const titleMakerModel = cfg.titleMaker?.model;
+	const titleModel = cfg["title-maker"]?.model;
 
 	// Resolve model chain for the lite role, or fall back to the
 	// cheapest model in the orchestrator chain.
 	let modelSpecs: string[] = [];
-	if (titleMakerModel) {
-		modelSpecs = resolveModelChainForSpawn(cfg, titleMakerModel);
+	if (titleModel) {
+		modelSpecs = await resolveModelChainForSpawn(cfg, titleModel);
 	}
 	if (modelSpecs.length === 0 && cfg.orchestrator?.model) {
-		const orchChain = resolveModelChainForSpawn(cfg, cfg.orchestrator.model);
+		const orchChain = await resolveModelChainForSpawn(cfg, cfg.orchestrator.model);
 		if (orchChain.length > 0) {
 			modelSpecs = [orchChain[orchChain.length - 1]]; // cheapest in chain
 		}
@@ -57,6 +57,9 @@ async function generateCaption(ctx: any, userText: string, assistantText: string
 	if (modelSpecs.length === 0) return null;
 
 	const model = modelSpecs[0];
+	const titleRole = cfg["title-maker"];
+	const timeoutMs = titleRole?.timeout ? titleRole.timeout * 1000 : 30_000;
+	const thinking = titleRole?.thinking ?? "off";
 
 	// One-line prompt — safe to pass as a single CLI argument.
 	const userSnippet = userText.replace(/"/g, "'").slice(0, 250).trim();
@@ -66,7 +69,8 @@ async function generateCaption(ctx: any, userText: string, assistantText: string
 		`User: ${userSnippet} Assistant: ${assistantSnippet}. Reply with ONLY the title. Title:`;
 
 	try {
-		const inv = piInvocation(["--mode", "json", "-p", "--no-session", "--model", model, prompt]);
+		const spawnArgs = ["--mode", "json", "-p", "--no-session", "--model", model, "--thinking", thinking, prompt];
+		const inv = piInvocation(spawnArgs);
 		const text = await new Promise<string>((resolve) => {
 			const proc = spawn(inv.command, inv.args, {
 				cwd: ctx.cwd,
@@ -82,7 +86,7 @@ async function generateCaption(ctx: any, userText: string, assistantText: string
 				proc.kill("SIGTERM");
 				setTimeout(() => proc.kill("SIGKILL"), 2000);
 				resolve("");
-			}, 30_000);
+			}, timeoutMs);
 
 			proc.stdout.on("data", (d: Buffer) => {
 				buf += d.toString();

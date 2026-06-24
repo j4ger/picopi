@@ -35,10 +35,6 @@ These exceptions never permit local code implementation, broad code reading, arc
 | Web research | `web-searcher` | External docs, versions, APIs, anything beyond one direct lookup |
 | Feasibility / idea assessment | `planner` | Can/should we do X, assess practicality, compare approaches, estimate complexity, identify blockers |
 
-## Gate check
-
-Before every local tool call, classify: is this broad code reading → `explorer`? Architecture/sequencing → `planner`? Editing code → `fixer`? Reviewing a diff → `auditor`? Multi-source web research → `web-searcher`? Assessing feasibility of an idea or comparing approaches → `planner`? If any apply, the next tool call must be `subagent`.
-
 ## Subagent call protocol
 
 Single mode:
@@ -62,6 +58,8 @@ Parallel mode (independent specialists only):
 Every subagent task must include: user goal, known context (files/errors/findings), exact scope/non-goals, whether edits are allowed (only `fixer` may edit code), and expected output.
 
 Required for all calls (single mode: top-level reason; parallel mode: per-task reason). `reason` is UI-only metadata for the orchestrator's audit trail. The subagent cannot see it.
+
+The `timeout` parameter (inactivity seconds) can be overridden per call — increase it for complex planner work or long-running explorer searches.
 
 ## Operating loop
 
@@ -96,17 +94,11 @@ Good: "In `src/dashboard/useMetrics.ts`, add cached fetch retry using `requestJs
 
 ## Verification
 
-- Prefer the most specific test/repro/build command from specialists.
-- If no runnable verification, call `auditor` for read-only review.
-- If neither is possible, final summary must say `unverified` and why.
-- Never claim "works," "fixed," or "tests pass" without output.
+Follow steps 8–9 of the Operating loop. Never claim "works," "fixed," or "tests pass" without output.
 
 ## Blocked and failed work
 
-1. Preserve specialist result as evidence.
-2. Identify root cause: too broad, ambiguous, missing context, conflicting requirements.
-3. Re-dispatch narrower or call `planner` with failure details.
-4. Do not retry the same task unchanged. Do not implement the remainder yourself.
+Follow steps 9–10 of the Operating loop. Do not retry the same task unchanged or implement the remainder yourself.
 
 ## Final summary
 

@@ -1,29 +1,37 @@
 {
   "orchestrator": {
-    "model": "flash",
-    "thinking": "medium"
+    "model": "orche",
+    "thinking": "low"
   },
 
   "agents": {
-    "planner":      { "model": "pro",   "thinking": "xhigh",  "timeout": 600 },
-    "explorer":     { "model": "flash", "thinking": "low",    "timeout": 300 },
-    "fixer":        { "model": "flash", "thinking": "medium", "timeout": 180 },
-    "auditor":      { "model": "pro",   "thinking": "high",   "timeout": 300 },
-    "web-searcher": { "model": "flash", "thinking": "low",    "timeout": 300 }
+    "planner":      { "model": "strong",   "thinking": "high",   "timeout": 600 },
+    "auditor":      { "model": "strong",   "thinking": "high",   "timeout": 300 },
+    "fixer":        { "model": "balanced", "thinking": "medium", "timeout": 300 },
+    "explorer":     { "model": "fast",     "thinking": "low",    "timeout": 300 },
+    "web-searcher": { "model": "fast",     "thinking": "low",    "timeout": 300 }
   },
 
   "aliases": {
-    "pro":   [ "google/gemini-2.5-pro",   "anthropic/claude-opus-4-5" ],
-    "flash": [ "google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5" ]
+    "strong":   [ "google/gemini-2.5-pro",   "anthropic/claude-opus-4-5" ],
+    "balanced": [ "google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5" ],
+    "fast":     [ "google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5" ],
+    "cheap":    [ "google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5" ],
+    "orche":    [ "google/gemini-2.5-flash", "anthropic/claude-sonnet-4-5" ]
   },
 
   "compaction": {
-    "model": "flash"
+    "model": "cheap"
   },
 
   "webSearch": {
     "provider": "auto",
     "searchModel": null,
     "summaryModel": null
+  },
+
+  "title-maker": {
+    "model": "cheap",
+    "thinking": "off"
   }
 }

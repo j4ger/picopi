@@ -618,9 +618,9 @@ async function runAgent(
 	// ── Resolve the full model chain for retry-with-fallback ─────────────
 	let modelSpecs: string[];
 	if (role) {
-		modelSpecs = resolveModelChainForSpawn(cfg, role.model);
+		modelSpecs = await resolveModelChainForSpawn(cfg, role.model, extensionCtx?.modelRegistry);
 		if (modelSpecs.length === 0) {
-			// No model in the chain matched models.json with an API key.
+			// No model in the chain was found (checked models.json and built-in registry).
 			// Pass the first raw chain entry so pi gives a meaningful
 			// "model not found" error.
 			const rawChain = resolveChain(cfg, role.model);

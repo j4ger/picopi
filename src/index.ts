@@ -231,6 +231,15 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 			}
+			if (cfg["title-maker"]?.model) {
+				const res = resultMap.get("title-maker");
+				lines.push(row("title-maker", cfg["title-maker"]!, res?.ok, res?.resolved));
+				if (res && !res.ok) {
+					for (const issue of res.issues) {
+						lines.push("      " + th.fg("error", `${issue.spec || res.alias} → ${issue.reason}`));
+					}
+				}
+			}
 			if (cfg.compaction?.model) {
 				const res = resultMap.get("compaction");
 				lines.push(row("compaction", { model: cfg.compaction.model } as RoleConfig, res?.ok, res?.resolved));

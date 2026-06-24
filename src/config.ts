@@ -25,10 +25,10 @@ export interface RoleConfig {
 
 export interface PicopiConfig {
 	orchestrator?: RoleConfig;
-	titleMaker?: RoleConfig;
+	"title-maker"?: RoleConfig;
 	agents?: Record<string, RoleConfig>;
 	aliases?: Record<string, string[]>;
-	compaction?: { model?: string | null };
+	compaction?: { model?: string | null; thinking?: ThinkingLevel; timeout?: number };
 	webSearch?: { provider?: string | null; searchModel?: string | null; summaryModel?: string | null };
 	/** Max concurrent subagent processes in parallel mode (default: 3). */
 	concurrency?: number;
@@ -74,7 +74,11 @@ export function loadConfig(): PicopiConfig {
 			cache.checkedAt = now;
 			return cache.cfg;
 		}
-		const cfg = stripComments(JSON.parse(fs.readFileSync(p, "utf-8"))) as PicopiConfig;
+			const cfg = stripComments(JSON.parse(fs.readFileSync(p, "utf-8"))) as PicopiConfig;
+		if (cfg.agents && "title-maker" in cfg.agents) {
+			console.warn('picopi: "title-maker" found in agents — use the top-level "title-maker" key instead; ignoring agents entry');
+			delete (cfg.agents as Record<string, RoleConfig>)["title-maker"];
+		}
 		cache = { file: p, mtime: mtimeMs, cfg, checkedAt: now };
 		return cfg;
 	} catch (err) {
@@ -193,13 +197,6 @@ export async function resolveRoleModel(
 	return null;
 }
 
-/** Comma-separated `--model` pattern so a spawned pi does the fallback walk itself.
- *  @deprecated Use `resolveModelForSpawn` instead — comma-separated chains are
- *  not understood by pi's `--model` flag. */
-export function roleModelPattern(cfg: PicopiConfig, alias: string): string {
-	return resolveChain(cfg, alias).join(",");
-}
-
 // ── Models.json resolution ────────────────────────────────────────────────────
 
 interface ModelsJson {
@@ -230,11 +227,13 @@ function loadModelsJson(): ModelsJson {
  * Resolve the first model from an alias chain that exists in models.json and
  * has an API key configured.  Returns the `provider/modelId` spec or null.
  *
- * This replaces the broken `roleModelPattern` approach for spawned pi
- * processes (pi does NOT support comma-separated fallback chains).
+ * For spawned pi processes (pi does NOT support comma-separated fallback chains).
  */
-export function resolveModelForSpawn(cfg: PicopiConfig, alias: string): string | null {
-	const chain = resolveModelChainForSpawn(cfg, alias);
+export function resolveModelForSpawn(cfg: PicopiConfig, alias: string, registry?: ModelRegistryLike): Promise<string | null> | string | null {
+	if (registry) {
+		return resolveModelChainForSpawn(cfg, alias, registry).then((chain) => chain.length > 0 ? chain[0] : null);
+	}
+	const chain = resolveModelChainForSpawnSync(cfg, alias);
 	return chain.length > 0 ? chain[0] : null;
 }
 
@@ -242,8 +241,33 @@ export function resolveModelForSpawn(cfg: PicopiConfig, alias: string): string |
  * Resolve ALL models from an alias chain that exist in models.json and have
  * an API key configured.  Returns the full ordered list of `provider/modelId`
  * specs so callers can implement runtime retry-with-fallback.
+ *
+ * When a `registry` is provided, also checks built-in providers (google,
+ * anthropic, openai) that are configured via /login but absent from models.json.
  */
-export function resolveModelChainForSpawn(cfg: PicopiConfig, alias: string): string[] {
+export async function resolveModelChainForSpawn(cfg: PicopiConfig, alias: string, registry?: ModelRegistryLike): Promise<string[]> {
+	const sync = resolveModelChainForSpawnSync(cfg, alias);
+	if (!registry) return sync;
+	// Also check built-in registry providers (e.g. configured via /login)
+	// for any chain entries not already resolved via models.json.
+	const syncSet = new Set(sync);
+	const result: string[] = [...sync];
+	for (const spec of resolveChain(cfg, alias)) {
+		if (syncSet.has(spec)) continue;
+		const slash = spec.indexOf("/");
+		if (slash <= 0) continue;
+		const model = registry.find(spec.slice(0, slash), spec.slice(slash + 1));
+		if (!model) continue;
+		try {
+			const auth = await registry.getApiKeyAndHeaders(model);
+			if (auth.ok && (auth.apiKey || auth.headers)) result.push(spec);
+		} catch { /* try next */ }
+	}
+	return result;
+}
+
+/** Synchronous version: only checks models.json providers (requires apiKey). */
+function resolveModelChainForSpawnSync(cfg: PicopiConfig, alias: string): string[] {
 	const chain = resolveChain(cfg, alias);
 	const mj = loadModelsJson();
 	const result: string[] = [];
@@ -253,8 +277,7 @@ export function resolveModelChainForSpawn(cfg: PicopiConfig, alias: string): str
 		const provider = spec.slice(0, slash);
 		const modelId = spec.slice(slash + 1);
 		const prov = mj.providers?.[provider];
-		if (!prov) continue;
-		// Check the model exists in the provider's model list
+		if (!prov?.apiKey) continue;
 		const hasModel = prov.models?.some((m) => m.id === modelId) ?? false;
 		if (!hasModel) continue;
 		result.push(spec);
@@ -324,6 +347,7 @@ export async function validateAllResolutions(
 	for (const [name, r] of Object.entries(cfg.agents ?? {})) {
 		if (r.model) roles.push({ role: `agent:${name}`, alias: r.model });
 	}
+	if (cfg["title-maker"]?.model) roles.push({ role: "title-maker", alias: cfg["title-maker"].model });
 	if (cfg.compaction?.model) roles.push({ role: "compaction", alias: cfg.compaction.model });
 
 	for (const { role, alias } of roles) {
