@@ -165,8 +165,9 @@ function benchModel(
 
 			if ((ev.type === "message_end" || ev.type === "tool_result_end") && ev.message?.role === "assistant") {
 				const usage = ev.message.usage;
-				if (usage?.outputTokens != null) lastOutputTokens = usage.outputTokens;
-				else if (usage?.completion_tokens != null) lastOutputTokens = usage.completion_tokens;
+				if (usage?.output != null) lastOutputTokens = usage.output;
+				else if ((usage as any)?.outputTokens != null) lastOutputTokens = (usage as any).outputTokens;
+				else if ((usage as any)?.completion_tokens != null) lastOutputTokens = (usage as any).completion_tokens;
 			}
 		};
 
