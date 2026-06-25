@@ -96,7 +96,7 @@ async function tryFallback(pi: ExtensionAPI, ctx: ExtensionContext, cfg: PicopiC
 	// model_select which overwrites currentModelSpec with the new model.
 	const originalSpec = currentModelSpec;
 
-	const success = await pi.setModel(model as object);
+	const success = await pi.setModel(model as unknown as import("@earendil-works/pi-ai").Model<any>);
 	if (!success) {
 		ctx.ui.notify(`Failed to switch to ${nextSpec} (no API key?)`, "error");
 		return;

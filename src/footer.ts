@@ -91,7 +91,7 @@ export function setupFooter(pi: ExtensionAPI): void {
 					const fg = (key: string, fallback: ThemeColor, text: string): string => {
 						try { return theme.fg(key as ThemeColor, text); } catch { return theme.fg(fallback, text); }
 					};
-					const contextSeverity = (pct: number): ThemeColor => {
+					const contextSeverity = (pct: number): string => {
 						if (pct > 90) return "error";
 						if (pct > 70) return "warning";
 						return "footerStats" as ThemeColor;
@@ -145,7 +145,7 @@ export function setupFooter(pi: ExtensionAPI): void {
 					const severity = contextSeverity(percentValue);
 					const ctxStr = severity === "footerStats"
 						? fg("footerStats", "dim", ctxText)
-						: theme.fg(severity, ctxText);
+						: theme.fg(severity as import("@earendil-works/pi-coding-agent").ThemeColor, ctxText);
 
 					// ---- left side: picopi glyph + role + stats ------------------
 					const glyph = state.role
@@ -164,7 +164,7 @@ export function setupFooter(pi: ExtensionAPI): void {
 					// ---- right side: model NAME + thinking ----------------------
 					const modelName = ctx.model?.name || ctx.model?.id || "no-model";
 					let rightPlain = modelName;
-					let rightColor: ThemeColor = "footerModel" as ThemeColor;
+					let rightColor: string = "footerModel";
 					if (state.fallbackTo) {
 						const fb = state.fallbackTo;
 						const slashIdx = fb.lastIndexOf("/");
@@ -201,7 +201,7 @@ export function setupFooter(pi: ExtensionAPI): void {
 					}
 					const right = rightColor === "footerModel"
 						? fg("footerModel", "dim", rightPlain)
-						: theme.fg(rightColor, rightPlain);
+						: theme.fg(rightColor as import("@earendil-works/pi-coding-agent").ThemeColor, rightPlain);
 
 					// ---- compose stats line -------------------------------------
 					const statsLine = fitColumns(left, right, width);

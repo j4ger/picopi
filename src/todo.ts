@@ -44,9 +44,10 @@ class TodoPanel {
 	}
 	render(width: number): string[] {
 		const th = this.theme;
+		const fg = (c: string, t: string) => th.fg(c as import("@earendil-works/pi-coding-agent").ThemeColor, t);
 		const lines: string[] = [""];
 		const title = th.fg("accent", " ✸ Todos ");
-		lines.push(truncateToWidth(th.fg("panelBorder", "──") + title + th.fg("panelBorder", "─".repeat(Math.max(0, width - 12))), width));
+		lines.push(truncateToWidth(th.fg("panelBorder" as import("@earendil-works/pi-coding-agent").ThemeColor, "──") + title + th.fg("panelBorder" as import("@earendil-works/pi-coding-agent").ThemeColor, "─".repeat(Math.max(0, width - 12))), width));
 		lines.push("");
 		if (this.todos.length === 0) {
 			lines.push(truncateToWidth(`  ${th.fg("dim", "No todos yet.")}`, width));
@@ -112,11 +113,12 @@ export function setupTodo(pi: ExtensionAPI) {
 		ctx.ui.setWidget("picopi-todo", (_tui, th) => ({
 			invalidate() {},
 			render(width: number): string[] {
+				const fg = (c: string, t: string) => th.fg(c as import("@earendil-works/pi-coding-agent").ThemeColor, t);
 				const lineClip = (s: string) => truncateToWidth(s, Math.max(1, width), "…");
 				if (isFolded) {
 					const parts: string[] = [];
-					if (open.length) parts.push(th.fg("todoOpen", `○${open.length}`));
-					if (done.length) parts.push(th.fg("subagentDone", `✓${done.length}`));
+					if (open.length) parts.push(fg("todoOpen", `○${open.length}`));
+					if (done.length) parts.push(fg("subagentDone", `✓${done.length}`));
 					const prefix = th.fg("dim", "▸ Todos");
 					const countSection = parts.length > 0 ? th.fg("dim", "  ") + parts.join(th.fg("dim", " ")) : "";
 					const keyHint = th.fg("dim", " │ alt+t");
@@ -125,16 +127,16 @@ export function setupTodo(pi: ExtensionAPI) {
 				const textWidth = Math.max(8, width - 6);
 				const clip = (s: string) => truncateToWidth(s, textWidth, "…");
 				const headingParts: string[] = [];
-				if (open.length) headingParts.push(th.fg("todoOpen", `○${open.length}`));
-				if (done.length) headingParts.push(th.fg("subagentDone", `✓${done.length}`));
+				if (open.length) headingParts.push(fg("todoOpen", `○${open.length}`));
+				if (done.length) headingParts.push(fg("subagentDone", `✓${done.length}`));
 				const headingCount = headingParts.length > 0 ? th.fg("dim", "  ") + headingParts.join(th.fg("dim", " ")) : "";
 				const lines: string[] = [lineClip(th.fg("accent", "▾ Todos") + headingCount + th.fg("dim", " │ alt+t"))];
 				const maxOpen = 5;
 				const shownOpen = openItems.slice(0, maxOpen);
 				for (const item of shownOpen) {
-					const icon = th.fg("todoOpen", "○");
+					const icon = fg("todoOpen", "○");
 					const id = th.fg("accent", `#${item.id}`);
-					const txt = th.fg("todoOpen", clip(item.text));
+					const txt = fg("todoOpen", clip(item.text));
 					lines.push(`  ${icon} ${id} ${txt}`);
 				}
 				if (openItems.length > maxOpen) {
@@ -143,9 +145,9 @@ export function setupTodo(pi: ExtensionAPI) {
 				if (doneItems.length > 0) {
 					lines.push(lineClip(`  ${th.fg("muted", `── ${doneItems.length} done ──`)}`));
 					for (const item of doneItems) {
-						const icon = th.fg("todoDone", "✓");
+						const icon = fg("todoDone", "✓");
 						const id = th.fg("accent", `#${item.id}`);
-						const txt = th.fg("todoDone", clip(item.text));
+						const txt = fg("todoDone", clip(item.text));
 						lines.push(`  ${icon} ${id} ${txt}`);
 					}
 				}

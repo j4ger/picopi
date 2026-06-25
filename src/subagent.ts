@@ -14,8 +14,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getMarkdownTheme, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { type KeyId, Container, Markdown, matchesKey, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { getActivePreset, loadConfig, resolveChain, resolveModelChainForSpawn, resolveModelDisplayName } from "./config.ts";
 
@@ -1087,7 +1087,7 @@ export function setupSubagent(pi: ExtensionAPI) {
 	});
 
 /** Open the combined live+history subagent inspector overlay. */
-async function runInspector(ctx: any): Promise<void> {
+async function runInspector(ctx: ExtensionContext): Promise<void> {
 	rebuildResults(ctx);
 	inspectorOpen = true;
 	if (extensionCtx) extensionCtx.ui.setWidget("picopi-subagents", undefined);
@@ -1271,7 +1271,7 @@ async function runInspector(ctx: any): Promise<void> {
 				const row = (content: string, bgColor?: string): string => {
 					const clipped = truncateToWidth(content, innerW);
 					const padded = clipped + " ".repeat(Math.max(0, innerW - visibleWidth(clipped)));
-					const inner = bgColor ? theme.bg(bgColor, padded) : padded;
+					const inner = bgColor ? (theme as any).bg(bgColor, padded) : padded;
 					return border("│") + inner + border("│");
 				};
 				const out: string[] = [border("┌" + hr + "┐")];
@@ -1392,8 +1392,8 @@ async function runInspector(ctx: any): Promise<void> {
 				if (matchesKey(data, "ctrl+c")) { done(); return; }
 				const items = buildItems();
 				if (items.length === 0) {
-					if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); markDirty(); }
-					else if (matchesKey(data, "q") || matchesKey(data, "Q")) done();
+					if (matchesKey(data, "r") || matchesKey(data, "R" as KeyId)) { rebuildResults(ctx); markDirty(); }
+					else if (matchesKey(data, "q") || matchesKey(data, "Q" as KeyId)) done();
 					return;
 				}
 				let idx = items.findIndex((i) => i.key === selectedKey);
@@ -1414,12 +1414,12 @@ async function runInspector(ctx: any): Promise<void> {
 					else if (matchesKey(data, "left")) { select(idx - 1); atBottom = true; }
 					else if (matchesKey(data, "right")) { select(idx + 1); atBottom = true; }
 					else if (matchesKey(data, "enter") || matchesKey(data, "space")) { expanded = false; }
-					else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
+					else if (matchesKey(data, "r") || matchesKey(data, "R" as KeyId)) { rebuildResults(ctx); }
 					else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
 					else if (matchesKey(data, "escape")) {
 						expanded = false;
 					}
-					else if (matchesKey(data, "q") || matchesKey(data, "Q")) { expanded = false; }
+					else if (matchesKey(data, "q") || matchesKey(data, "Q" as KeyId)) { expanded = false; }
 					markDirty();
 					return;
 				}
@@ -1431,9 +1431,9 @@ async function runInspector(ctx: any): Promise<void> {
 				else if (matchesKey(data, "home")) select(0);
 				else if (matchesKey(data, "end")) select(items.length - 1);
 				else if (matchesKey(data, "enter") || matchesKey(data, "space")) { const opening = items[idx]; expanded = true; atBottom = !!opening?.running; scrollOffset = 0; }
-				else if (matchesKey(data, "r") || matchesKey(data, "R")) { rebuildResults(ctx); }
+				else if (matchesKey(data, "r") || matchesKey(data, "R" as KeyId)) { rebuildResults(ctx); }
 				else if (matchesKey(data, "v")) { verbosity = (verbosity + 1) % 3; }
-				else if (matchesKey(data, "q") || matchesKey(data, "Q")) { done(); return; }
+				else if (matchesKey(data, "q") || matchesKey(data, "Q" as KeyId)) { done(); return; }
 				markDirty();
 			},
 			dispose() {

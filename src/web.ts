@@ -168,7 +168,7 @@ function createLookup(hostname: string) {
 		dns.lookup(safeHostname, lookupOptions, (err, addresses) => {
 			clearTimeout(dnsTimeout);
 			if (err) return cb(err);
-			const entries = Array.isArray(addresses) ? addresses : [addresses];
+			const entries = (Array.isArray(addresses) ? addresses : [addresses]) as dns.LookupAddress[];
 			if (entries.length === 0) {
 				return cb(new Error(`DNS lookup returned no addresses for ${safeHostname}`));
 			}
@@ -736,11 +736,11 @@ export function setupWeb(pi: ExtensionAPI) {
 			const d = result.details as { results?: SearchResult[] } | undefined;
 			const total = d?.results?.reduce((a, r) => a + r.hits.length, 0) ?? 0;
 			const prov = d?.results?.[0]?.provider ?? "?";
-			const isErr = result.isError || total === 0;
+			const isErr = (result as any).isError || total === 0;
 			const icon = isErr ? "✗ " : "✓ ";
 			const color: "error" | "success" = isErr ? "error" : "success";
 			const info = isErr ? "error" : `${total} sources via ${prov}`;
-			return new Text(theme.fg(color, icon) + theme.fg("toolMeta", info), 0, 0);
+			return new Text(theme.fg(color, icon) + theme.fg("toolMeta" as import("@earendil-works/pi-coding-agent").ThemeColor, info), 0, 0);
 		},
 	});
 
@@ -800,11 +800,11 @@ export function setupWeb(pi: ExtensionAPI) {
 		renderResult(result, _opts, theme) {
 			const t = result.content[0];
 			const text = t?.type === "text" ? t.text : "";
-			const isErr = result.isError || !text;
+			const isErr = (result as any).isError || !text;
 			const icon = isErr ? "✗ " : "✓ ";
 			const color: "error" | "success" = isErr ? "error" : "success";
 			const info = isErr ? "error" : `${text.length} chars`;
-			return new Text(theme.fg(color, icon) + theme.fg("toolMeta", info), 0, 0);
+			return new Text(theme.fg(color, icon) + theme.fg("toolMeta" as import("@earendil-works/pi-coding-agent").ThemeColor, info), 0, 0);
 		},
 	});
 }

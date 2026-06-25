@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "paths": {
+      "@earendil-works/pi-agent-core": ["/home/xiayuxuan/.bun/install/global/node_modules/@earendil-works/pi-agent-core"],
+      "@earendil-works/pi-ai": ["/home/xiayuxuan/.bun/install/global/node_modules/@earendil-works/pi-ai"],
+      "@earendil-works/pi-ai/compat": ["/home/xiayuxuan/.bun/install/global/node_modules/@earendil-works/pi-ai/dist/compat.d.ts"],
+      "@earendil-works/pi-coding-agent": ["/home/xiayuxuan/.bun/install/global/node_modules/@earendil-works/pi-coding-agent"],
+      "@earendil-works/pi-tui": ["/home/xiayuxuan/.bun/install/global/node_modules/@earendil-works/pi-tui"],
+      "typebox": ["/home/xiayuxuan/.bun/install/global/node_modules/typebox"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

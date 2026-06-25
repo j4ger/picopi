@@ -16,13 +16,14 @@ import { setupCaption } from "./caption.ts";
 import { setupTodo } from "./todo.ts";
 import { setupUndo } from "./undo.ts";
 import { setupRtkBash } from "./rtk-bash.ts";
+import { setupBench } from "./bench.ts";
 import { setupWeb } from "./web.ts";
 
 /** Render read-only lines in a bordered overlay box; closes on Enter/Esc. */
 function showBoxedOverlay(ctx: ExtensionCommandContext, lines: string[]): Promise<void> {
 	return ctx.ui.custom<void>((_tui, theme, _kb, done) => ({
 		render(width: number): string[] {
-			const border = (s: string) => { try { return theme.fg("panelBorder", s); } catch { return theme.fg("muted", s); } };
+			const border = (s: string) => { try { return theme.fg("panelBorder" as import("@earendil-works/pi-coding-agent").ThemeColor, s); } catch { return theme.fg("muted", s); } };
 			const innerW = Math.max(0, width - 2);
 			const hr = "─".repeat(innerW);
 			const out = [border("┌" + hr + "┐")];
@@ -53,6 +54,7 @@ export default function (pi: ExtensionAPI) {
 	setupCaption(pi);
 	setupWeb(pi);
 	setupRtkBash(pi);
+	setupBench(pi);
 
 	// --- /preset command ----------------------------------------------------------
 	pi.registerCommand("preset", {
@@ -103,7 +105,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const label = target || "default";
-			ctx.ui.notify(`Switched to preset "${label}"${res.detail ? ` (${res.detail})` : ""}`, "success");
+			ctx.ui.notify(`Switched to preset "${label}"${res.detail ? ` (${res.detail})` : ""}`, "success" as "info");
 		},
 	});
 
@@ -181,7 +183,7 @@ export default function (pi: ExtensionAPI) {
 
 			setCurrentModel(targetSpec);
 			clearPicopiFooterNote();
-			ctx.ui.notify(`Switched to ${targetSpec} (${targetIdx + 1}/${chain.length} in chain)`, "success");
+			ctx.ui.notify(`Switched to ${targetSpec} (${targetIdx + 1}/${chain.length} in chain)`, "success" as "info");
 		},
 	});
 
@@ -196,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Safe color — fall back to existing key if new semantic key doesn't exist.
 			const fg = (key: string, fallback: string, text: string) => {
-				try { return th.fg(key, text); } catch { return th.fg(fallback, text); }
+				try { return th.fg(key as import("@earendil-works/pi-coding-agent").ThemeColor, text); } catch { return th.fg(fallback as import("@earendil-works/pi-coding-agent").ThemeColor, text); }
 			};
 
 			const row = (name: string, r: { model: string; thinking?: string; timeout?: number }, ok?: boolean, resolved?: string) => {

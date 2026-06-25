@@ -9,7 +9,7 @@
  * so the behaviour is never a mystery and the model is only displayed once.
  */
 
-import { completeSimple } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { VERSION as PI_VERSION, convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
 import { type ModelRegistryLike, type PicopiConfig, loadConfig, resolveRoleModel, validateAllResolutions } from "./config.ts";
@@ -54,7 +54,7 @@ export async function applyOrchestrator(pi: ExtensionAPI, ctx: ExtensionContext,
 		return { ok: false, detail: `no working model for "${role.model}"` };
 	}
 
-	const ok = await pi.setModel(resolved.model as object);
+	const ok = await pi.setModel(resolved.model as unknown as import("@earendil-works/pi-ai").Model<any>);
 	if (!ok) {
 		setPicopiFooter({ role: role.model, note: `auth failed for ${resolved.spec} — run /login`, tone: "warning" });
 		return { ok: false, detail: `auth failed for ${resolved.spec}` };
@@ -140,7 +140,7 @@ export function setupOrchestrator(pi: ExtensionAPI) {
 
 		try {
 			const response = await completeSimple(
-				resolved.model as object,
+				resolved.model as unknown as import("@earendil-works/pi-ai").Model<any>,
 				{
 					messages: [
 						{
@@ -161,7 +161,7 @@ ${conversationText}
 						},
 					],
 				},
-				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal: ctrl.signal, reasoning: cfg.compaction?.thinking },
+				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal: ctrl.signal, reasoning: cfg.compaction?.thinking as any },
 			);
 
 			const summary = response.content

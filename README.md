@@ -88,6 +88,7 @@ You can run `/picopi` to verify every role resolves.
 
 | `/tree` | Session tree navigator |
 | `/subagents` | Live subagent inspector |
+| `/bench [prompt] [--models ...] [--concurrency N] [--timeout N] [clear]` | Benchmark all configured models (TTFT, tok/s, alive/dead/timeout) |
 | `/fork` | Fork current session |
 | `/compact` | Compact context |
 
