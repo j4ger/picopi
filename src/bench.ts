@@ -8,7 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { getActivePreset, loadConfig, resolveChain } from "./config.ts";
 import { sanitizeEnv, piInvocation } from "./subagent.ts";
@@ -20,24 +20,46 @@ const DEFAULT_TIMEOUT = 30; // seconds
 const DEFAULT_CONCURRENCY = 3;
 
 const BENCH_WIDGET_ID = "picopi-bench";
+let activeBench: AbortController | null = null;
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
 type BenchStatus = "pending" | "running" | "alive" | "dead" | "timeout";
 
-interface BenchResult {
-	model: string;           // provider/id
-	status: BenchStatus;
-	ttftMs?: number;         // time to first text token
+// One measured run of one model.
+interface BenchSample {
+	status: "alive" | "dead" | "timeout";
+	ttftMs?: number;
 	tokensPerSec?: number;
 	outputTokens?: number;
-	genMs?: number;          // generation time (first token → done)
+	genMs?: number;
 	error?: string;
+}
+
+// Aggregated result for a model across N rounds.
+interface BenchResult {
+	model: string;          // provider/id
+	status: BenchStatus;    // overall, see aggregation rule
+	roundsPlanned: number;
+	aliveCount: number;     // rounds with status "alive"
+	samples: BenchSample[];
+	// Aggregates over ALIVE rounds only:
+	ttftMs?: number;        // mean
+	tokensPerSec?: number;  // mean
+	error?: string;         // representative error when overall status is dead/timeout
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const fmt = (ms: number) => ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+
+const tokPerSec = (tokens?: number, genMs?: number) =>
+	tokens != null && genMs != null && genMs > 0 ? Math.round((tokens / genMs) * 1000) : undefined;
+
+function mean(nums: number[]): number | undefined {
+	if (!nums.length) return undefined;
+	return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+}
 
 const STATUS_GLYPH: Record<BenchStatus, string> = {
 	pending: "…",
@@ -61,22 +83,19 @@ function safeFg(theme: any, color: string, text: string): string {
 
 /**
  * Collect every unique provider/model leaf across all alias chains, including
- * preset-scoped aliases (e.g. `alias@preset`).  Each entry carries a provenance
- * label listing every alias key that resolves to it.
+ * preset-scoped aliases (e.g. `alias@preset`).
  */
 function collectAllModels(
 	cfg: ReturnType<typeof loadConfig>,
 	registry?: ExtensionCommandContext["modelRegistry"],
-): { spec: string; label: string }[] {
-	const provenance = new Map<string, Set<string>>();
-	const addSpec = (spec: string, key: string) => {
-		if (!spec.includes("/")) return;
-		if (!provenance.has(spec)) provenance.set(spec, new Set());
-		provenance.get(spec)!.add(key);
+): { spec: string }[] {
+	const specs = new Set<string>();
+	const addSpec = (spec: string) => {
+		if (spec.includes("/")) specs.add(spec);
 	};
 	// Walk every alias entry (base + preset-scoped)
-	for (const [key, chain] of Object.entries(cfg.aliases ?? {})) {
-		for (const spec of chain) addSpec(spec, key);
+	for (const chain of Object.values(cfg.aliases ?? {})) {
+		for (const spec of chain) addSpec(spec);
 	}
 	// Role references (literal provider/model or alias names)
 	const roleEntries: [string, string][] = [
@@ -85,33 +104,36 @@ function collectAllModels(
 		...(cfg.compaction?.model ? [["compaction", cfg.compaction.model]] as [string,string][] : []),
 		...Object.entries(cfg.agents ?? {}).map(([n, r]) => [n, r.model] as [string, string]),
 	];
-	for (const [role, alias] of roleEntries) {
-		for (const spec of resolveChain(cfg, alias)) addSpec(spec, role);
+	for (const [, alias] of roleEntries) {
+		for (const spec of resolveChain(cfg, alias)) addSpec(spec);
 	}
 	// Merge registry models
 	if (registry) {
 		for (const m of registry.getAvailable()) {
 			const spec = `${m.provider}/${m.id}`;
-			if (!spec.includes("/")) continue;
-			if (!provenance.has(spec)) provenance.set(spec, new Set(["registry"]));
-			else provenance.get(spec)!.add("registry");
+			if (spec.includes("/")) specs.add(spec);
 		}
 	}
-	return Array.from(provenance.entries()).map(([spec, keys]) => ({
-		spec,
-		label: Array.from(keys).join(","),
-	}));
+	return Array.from(specs)
+		.map(spec => ({ spec }))
+		.sort((a, b) => {
+			const pa = a.spec.split("/")[0];
+			const pb = b.spec.split("/")[0];
+			const c = pa.localeCompare(pb);
+			if (c !== 0) return c;
+			return a.spec.localeCompare(b.spec);
+		});
 }
 
-/** Spawn a single pi child, measure TTFT and token/sec, resolve BenchResult. */
+/** Spawn a single pi child, measure TTFT and token/sec, resolve BenchSample. */
 function benchModel(
 	model: string,
 	prompt: string,
 	timeoutSec: number,
 	signal: AbortSignal,
-): Promise<BenchResult> {
-	return new Promise<BenchResult>((resolve) => {
-		const result: BenchResult = { model, status: "running" };
+): Promise<BenchSample> {
+	return new Promise<BenchSample>((resolve) => {
+		let result: BenchSample;
 		const inv = piInvocation(["--mode", "json", "-p", "--no-session", "--thinking", "off",
 			"--model", model, prompt]);
 		const startMs = Date.now();
@@ -159,7 +181,7 @@ function benchModel(
 				if (text && !ttftResolved) {
 					ttftResolved = true;
 					firstTokenMs = Date.now();
-					result.ttftMs = firstTokenMs - startMs;
+					result = { status: "alive", ttftMs: firstTokenMs - startMs };
 				}
 			}
 
@@ -187,28 +209,20 @@ function benchModel(
 			if (buf.trim()) onLine(buf);
 
 			if (timedOut) {
-				result.status = "timeout";
-				resolve(result);
+				resolve({ status: "timeout" });
 				return;
 			}
 			if (signal.aborted) {
-				result.status = "dead";
-				result.error = "aborted";
-				resolve(result);
+				resolve({ status: "dead", error: "aborted" });
 				return;
 			}
 			if (code !== 0 || !ttftResolved) {
-				result.status = "dead";
-				resolve(result);
+				resolve({ status: "dead" });
 				return;
 			}
 			const doneMs = Date.now();
-			result.status = "alive";
-			result.outputTokens = lastOutputTokens || undefined;
-			result.genMs = doneMs - firstTokenMs;
-			if (lastOutputTokens > 0 && result.genMs > 0) {
-				result.tokensPerSec = Math.round((lastOutputTokens / result.genMs) * 1000);
-			}
+			result = { ...result, status: "alive", outputTokens: lastOutputTokens || undefined, genMs: doneMs - firstTokenMs };
+			result.tokensPerSec = tokPerSec(lastOutputTokens || undefined, result.genMs);
 			resolve(result);
 		});
 		proc.on("error", () => {
@@ -216,9 +230,7 @@ function benchModel(
 			finished = true;
 			clearTimeout(timeoutId);
 			signal.removeEventListener("abort", onAbort);
-			result.status = "dead";
-			result.error = "spawn failed";
-			resolve(result);
+			resolve({ status: "dead", error: "spawn failed" });
 		});
 	});
 }
@@ -237,6 +249,48 @@ async function mapLimit<I, O>(items: I[], limit: number, fn: (i: I, idx: number)
 	return out;
 }
 
+function aggregate(model: string, samples: BenchSample[], planned: number): BenchResult {
+	const aliveSamples = samples.filter(s => s.status === "alive");
+	const aliveCount = aliveSamples.length;
+
+	// Overall status:
+	// - alive if at least one sample is alive (a model that answered at least once is alive).
+	// - else timeout if any sample timed out.
+	// - else dead.
+	let status: BenchStatus = "dead";
+	if (aliveCount > 0) {
+		status = "alive";
+	} else if (samples.some(s => s.status === "timeout")) {
+		status = "timeout";
+	}
+
+	const ttfts = aliveSamples.map(s => s.ttftMs).filter((v): v is number => v != null);
+	const tps = aliveSamples.map(s => s.tokensPerSec).filter((v): v is number => v != null);
+
+	const ttftMs = mean(ttfts);
+	const tokensPerSec = mean(tps);
+
+	let error: string | undefined;
+	if (status === "alive") {
+		error = undefined;
+	} else {
+		const nonAlive = samples.filter(s => s.status !== "alive");
+		error = nonAlive.find(s => s.error && s.error.trim())?.error?.trim();
+		if (!error) error = status === "timeout" ? "timeout" : "failed";
+	}
+
+	return {
+		model,
+		status,
+		roundsPlanned: planned,
+		aliveCount,
+		samples,
+		ttftMs,
+		tokensPerSec,
+		error,
+	};
+}
+
 // ── widget renderer ───────────────────────────────────────────────────────────
 
 /** Pad/truncate a string to an exact visible width. */
@@ -247,7 +301,7 @@ function col(s: string, w: number, right = false): string {
 	return right ? pad + s : s + pad;
 }
 
-function makeWidgetRenderer(results: (BenchResult & { label: string })[], title: string) {
+function makeWidgetRenderer(results: BenchResult[], title: string) {
 	return (_tui: any, theme: any) => ({
 		invalidate() {},
 		render(width: number): string[] {
@@ -263,7 +317,8 @@ function makeWidgetRenderer(results: (BenchResult & { label: string })[], title:
 			const alive = results.filter(r => r.status === "alive").length;
 			const dead = results.filter(r => r.status === "dead").length;
 			const timedout = results.filter(r => r.status === "timeout").length;
-			const headerLeft = safeFg(theme, "accent", "⬡ bench") + "  " + safeFg(theme, "dim", truncateToWidth(title, 30, "…"));
+			const rounds = results[0]?.roundsPlanned ?? 1;
+			const headerLeft = safeFg(theme, "accent", "⬡ bench") + "  " + safeFg(theme, "dim", truncateToWidth(title, 30, "…")) + `  r:${rounds}`;
 			const headerRight = `total:${total}  running:${running}  done:${done}  ` +
 				safeFg(theme, "success", `${alive}✓`) + " " +
 				safeFg(theme, "error", `${dead}✗`) + " " +
@@ -272,17 +327,19 @@ function makeWidgetRenderer(results: (BenchResult & { label: string })[], title:
 			lines.push(bg(clip(pad(headerLeft + " ".repeat(gap) + headerRight))));
 
 			// Fixed column widths
-			const W_ST = 1, W_TTFT = 9, W_TOKS = 7, W_TOKPS = 8, W_DUR = 8, W_ERR = 16;
-			const fixedW = W_ST + 1 + W_TTFT + 1 + W_TOKPS + 1 + W_TOKS + 1 + W_DUR + 1 + W_ERR;
-			const remaining = Math.max(12, width - fixedW - 2);
-			const W_MODEL = Math.max(8, Math.floor(remaining * 0.65));
-			const W_LABEL = Math.max(4, remaining - W_MODEL - 1);
+			const W_ST = 1, W_TTFT = 8, W_TOKPS = 7, W_INFO = 12;
+			// 4 gaps between the 5 columns
+			const gaps = 4;
+			const fixedW = W_ST + W_TTFT + W_TOKPS + W_INFO;
+			const W_MODEL = Math.max(10, width - fixedW - gaps);
 
 			// Column header row
 			const hRow = [
-				col("S", W_ST), col("model", W_MODEL), col("alias", W_LABEL),
-				col("TTFT", W_TTFT, true), col("tok/s", W_TOKPS, true),
-				col("toks", W_TOKS, true), col("dur", W_DUR, true), col("error", W_ERR),
+				col("S", W_ST),
+				col("model", W_MODEL),
+				col("TTFT", W_TTFT, true),
+				col("tok/s", W_TOKPS, true),
+				col("rounds", W_INFO),
 			].join(" ");
 			lines.push(bg(pad(safeFg(theme, "dim", clip(hRow)))));
 
@@ -290,51 +347,65 @@ function makeWidgetRenderer(results: (BenchResult & { label: string })[], title:
 				const color = STATUS_COLOR[r.status];
 				const st = safeFg(theme, color, col(STATUS_GLYPH[r.status], W_ST));
 				const modelC = safeFg(theme, r.status === "alive" ? "text" : "dim", col(r.model, W_MODEL));
-				const labelC = safeFg(theme, "dim", col(r.label, W_LABEL));
 
 				const ttftStr = r.ttftMs != null ? fmt(r.ttftMs) : (r.status === "running" ? "…" : "-");
 				const ttftC = safeFg(theme, r.ttftMs != null ? "text" : "dim", col(ttftStr, W_TTFT, true));
 
-				// Compute tok/s whenever output tokens and genMs are available
-				let tps = r.tokensPerSec;
-				if (tps == null && r.outputTokens != null && r.genMs != null && r.genMs > 0)
-					tps = Math.round((r.outputTokens / r.genMs) * 1000);
-				const tpsC = safeFg(theme, tps != null ? "text" : "dim", col(tps != null ? String(tps) : "-", W_TOKPS, true));
+				const tpsStr = r.tokensPerSec != null ? String(r.tokensPerSec) : "-";
+				const tpsC = safeFg(theme, r.tokensPerSec != null ? "text" : "dim", col(tpsStr, W_TOKPS, true));
 
-				const toksC = safeFg(theme, r.outputTokens != null ? "text" : "dim",
-					col(r.outputTokens != null ? String(r.outputTokens) : "-", W_TOKS, true));
+				let infoStr = "";
+				if (r.status === "dead" || r.status === "timeout") {
+					infoStr = r.error ?? (r.status === "timeout" ? "timeout" : "failed");
+				} else {
+					infoStr = `${r.aliveCount}/${r.roundsPlanned}`;
+				}
+				const infoColor = (r.status === "dead" || r.status === "timeout") ? "error" : "dim";
+				const infoC = safeFg(theme, infoColor, col(infoStr, W_INFO));
 
-				const totalMs = (r.ttftMs ?? 0) + (r.genMs ?? 0);
-				const durStr = totalMs > 0 ? fmt(totalMs) : (r.status === "running" ? "…" : "-");
-				const durC = safeFg(theme, totalMs > 0 ? "text" : "dim", col(durStr, W_DUR, true));
-
-				let errStr = "";
-				if (r.status === "dead") errStr = r.error ?? "failed";
-				else if (r.status === "timeout") errStr = "timeout";
-				const errC = safeFg(theme, errStr ? "error" : "dim", col(errStr, W_ERR));
-
-				lines.push(bg(pad(clip([st, modelC, labelC, ttftC, tpsC, toksC, durC, errC].join(" ")))));
+				lines.push(bg(pad(clip([st, modelC, ttftC, tpsC, infoC].join(" ")))));
 			}
 			return lines;
 		},
 	});
 }
 
-// ── command registration ──────────────────────────────────────────────────────
+// ── command / flag registration ───────────────────────────────────────────────
 
 export function setupBench(pi: ExtensionAPI) {
+	pi.registerFlag("bench", { description: "Run model benchmark on startup", type: "boolean", default: false });
+	pi.registerFlag("bench-prompt", { description: "Prompt for --bench", type: "string" });
+	pi.registerFlag("bench-rounds", { description: "Rounds to average for --bench (default 3)", type: "string" });
+
+	pi.on("session_start", async (event, ctx) => {
+		if (event.reason !== "startup") return;
+		if (!pi.getFlag("bench")) return;
+		const prompt = (pi.getFlag("bench-prompt") as string | undefined)?.trim() || DEFAULT_PROMPT;
+		const roundsRaw = parseInt((pi.getFlag("bench-rounds") as string | undefined) ?? "", 10);
+		const rounds = Number.isFinite(roundsRaw) && roundsRaw > 0 ? roundsRaw : 3;
+		const cfg = loadConfig();
+		await runBench(ctx, {
+			prompt,
+			models: null,
+			concurrency: cfg.concurrency ?? DEFAULT_CONCURRENCY,
+			timeoutSec: DEFAULT_TIMEOUT,
+			rounds,
+		});
+	});
+
 	pi.registerCommand("bench", {
-		description: "Benchmark all configured models (TTFT, tok/s, alive/dead/timeout)",
+		description: "Benchmark all configured models (TTFT, tok/s, status; --rounds N to average)",
 		handler: async (args, ctx) => {
 			const cfg = loadConfig();
 
-			// parse args: [prompt] [--models m1,m2] [--concurrency N] [--timeout N] [--all-presets] [clear]
+			// parse args: [prompt] [--models m1,m2] [--concurrency N] [--timeout N] [--rounds N] [clear]
 			let promptText = DEFAULT_PROMPT;
 			let modelFilter: string[] | null = null;
 			let concurrency = cfg.concurrency ?? DEFAULT_CONCURRENCY;
 			let timeoutSec = DEFAULT_TIMEOUT;
+			let rounds = 3;
 
-			const parts = args.trim().split(/\s+/);
+			const parts = args.trim() ? args.trim().split(/\s+/) : [];
 			const promptParts: string[] = [];
 			for (let i = 0; i < parts.length; i++) {
 				const p = parts[i];
@@ -346,56 +417,102 @@ export function setupBench(pi: ExtensionAPI) {
 				} else if (p === "--timeout" && parts[i + 1]) {
 					const n = parseInt(parts[++i], 10);
 					if (!isNaN(n) && n > 0) timeoutSec = n;
-				} else if (p === "--all-presets" || p === "clear") {
-					// clear: remove widget; --all-presets: noted (already covered via collectAllModels)
-					if (p === "clear") {
-						ctx.ui.setWidget(BENCH_WIDGET_ID, undefined);
-						ctx.ui.notify("Bench widget cleared", "info");
-						return;
+				} else if (p === "--rounds" && parts[i + 1]) {
+					const n = parseInt(parts[++i], 10);
+					if (!isNaN(n) && n > 0) rounds = n;
+				} else if (p === "clear") {
+					if (activeBench) {
+						activeBench.abort();
+						activeBench = null;
 					}
+					ctx.ui.setWidget(BENCH_WIDGET_ID, undefined);
+					ctx.ui.notify("Bench widget cleared", "info");
+					return;
 				} else if (p && !p.startsWith("--")) {
 					promptParts.push(p);
 				}
 			}
 			if (promptParts.length) promptText = promptParts.join(" ");
 
-			let allModels = collectAllModels(cfg, ctx.modelRegistry);
-			if (modelFilter) allModels = allModels.filter(({ spec }) => modelFilter!.some(f => spec.includes(f)));
-			if (allModels.length === 0) {
-				ctx.ui.notify("No models found in config. Check aliases/agents in config.json.", "warning");
-				return;
-			}
-
-			const ac = new AbortController();
-			const results: (BenchResult & { label: string })[] = allModels.map(({ spec, label }) => ({
-				model: spec, label, status: "pending" as BenchStatus,
-			}));
-
-			const refresh = () => {
-				ctx.ui.setWidget(BENCH_WIDGET_ID, makeWidgetRenderer(results, promptText) as any);
-			};
-			refresh();
-
-			ctx.ui.notify(`Benchmarking ${allModels.length} model(s) (concurrency ${concurrency}, timeout ${timeoutSec}s)…`, "info");
-
-			await mapLimit(results, concurrency, async (r, i) => {
-				results[i] = { model: r.model, label: r.label, status: "running" };
-				refresh();
-				const res = await benchModel(r.model, promptText, timeoutSec, ac.signal);
-				results[i] = { ...res, label: r.label };
-				refresh();
+			await runBench(ctx, {
+				prompt: promptText,
+				models: modelFilter,
+				concurrency,
+				timeoutSec,
+				rounds,
 			});
-
-			// Final retained widget
-			refresh();
-
-			const alive = results.filter(r => r.status === "alive").length;
-			const dead = results.filter(r => r.status === "dead").length;
-			const timeout = results.filter(r => r.status === "timeout").length;
-			ctx.ui.notify(
-				`Bench done: ${alive} alive, ${dead} dead, ${timeout} timeout (${allModels.length} total)`,
-				dead > 0 || timeout > 0 ? "warning" : "info"
-			);
 		},
 	});
+}
+
+// ── core runner ───────────────────────────────────────────────────────────────
+
+interface BenchOptions {
+	prompt: string;
+	models: string[] | null;
+	concurrency: number;
+	timeoutSec: number;
+	rounds: number;
+}
+
+async function runBench(ctx: ExtensionContext, opts: BenchOptions): Promise<void> {
+	const cfg = loadConfig();
+	const all = collectAllModels(cfg, ctx.modelRegistry);
+	const filtered = opts.models
+		? all.filter(({ spec }) => opts.models!.some(f => spec.includes(f)))
+		: all;
+
+	if (filtered.length === 0) {
+		ctx.ui.notify("No models found in config. Check aliases/agents in config.json.", "warning");
+		return;
+	}
+
+	const results: BenchResult[] = filtered.map(({ spec }) => ({
+		model: spec,
+		status: "pending",
+		roundsPlanned: opts.rounds,
+		aliveCount: 0,
+		samples: [],
+	}));
+
+	const refresh = () => {
+		ctx.ui.setWidget(BENCH_WIDGET_ID, makeWidgetRenderer(results, opts.prompt));
+	};
+	refresh();
+
+	ctx.ui.notify(
+		`Benchmarking ${filtered.length} model(s) × ${opts.rounds} round(s) (concurrency ${opts.concurrency}, timeout ${opts.timeoutSec}s)…`,
+		"info",
+	);
+
+	if (activeBench) activeBench.abort();
+	const ac = new AbortController();
+	activeBench = ac;
+	try {
+		await mapLimit(results, opts.concurrency, async (r, i) => {
+			const samples: BenchSample[] = [];
+			for (let round = 0; round < opts.rounds; round++) {
+				results[i] = { ...results[i], status: "running" };
+				refresh();
+				const sample = await benchModel(r.model, opts.prompt, opts.timeoutSec, ac.signal);
+				samples.push(sample);
+				// keep "running" until the last round so the progress is visible
+				results[i] = aggregate(r.model, samples, opts.rounds);
+				if (round < opts.rounds - 1) results[i] = { ...results[i], status: "running" };
+				refresh();
+			}
+		});
+
+		refresh();
+
+		const alive = results.filter(r => r.status === "alive").length;
+		const dead = results.filter(r => r.status === "dead").length;
+		const timeout = results.filter(r => r.status === "timeout").length;
+		ctx.ui.notify(
+			`Bench done: ${alive} alive, ${dead} dead, ${timeout} timeout (${results.length} total)`,
+			dead > 0 || timeout > 0 ? "warning" : "info",
+		);
+	} finally {
+		if (activeBench === ac) activeBench = null;
+	}
 }
