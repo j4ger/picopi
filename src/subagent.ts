@@ -327,9 +327,14 @@ function updateStatusPanel(context?: any) {
 
 				let statusLabel = "";
 				if (urgent) {
-					const elapsed = formatDuration(Date.now() - urgent.startTime);
 					const agentStr = truncateToWidth(urgent.agent, 12, "");
-					statusLabel = theme.fg("dim", " │ ") + statusFg(theme, urgent.status, agentStr) + theme.fg("dim", ` ${elapsed}`);
+					// Only show elapsed time for live agents (running/stuck); a failed agent's
+					// frozen duration is noise in the one-line summary — the ✗ count covers it.
+					const showElapsed = urgent.status === "running" || urgent.status === "stuck";
+					const elapsedSuffix = showElapsed
+						? theme.fg("dim", ` ${formatDuration((urgent.endTime ?? Date.now()) - urgent.startTime)}`)
+						: "";
+					statusLabel = theme.fg("dim", " │ ") + statusFg(theme, urgent.status, agentStr) + elapsedSuffix;
 					if (urgent.progress || urgent.currentTool) {
 						statusLabel += theme.fg("dim", ` · ${truncateToWidth(urgent.progress || urgent.currentTool!, 16, "…")}`);
 					}
