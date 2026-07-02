@@ -199,9 +199,13 @@ The previous `pro`/`flash`/`lite` aliases were renamed to be more descriptive:
 
 ### Runtime fallback
 
-When the orchestrator's model errors out (timeout, overload, rate limit, 5xx, auth, …), picopi switches to the next model in the alias chain so pi's own retry picks up the fallback model. Context-overflow errors are left to pi's compaction instead. Disable with `PI_FALLBACK_DISABLE=true`.
+On persistent upstream errors (timeout, overload, rate limit, 5xx, auth, …), picopi walks the **full alias chain automatically**, re-attempting the failed task on each successive model in turn. In interactive sessions (tui/rpc) it re-triggers the turn by sending a continuation message on the new model; in json/print (subagent) modes it switches to the next working model for subsequent turns within the subagent session (no auto-continuation). Context-overflow errors are still left to pi's compaction. Disable entirely with `PI_FALLBACK_DISABLE=true`.
 
-**Limitation:** fallback only fires while pi is retrying. Non-retryable errors (auth, content-policy, model-not-found) and `retry.maxRetries: 0` stop the turn immediately — the model is switched for the *next* turn, but the failed turn is not re-run automatically. Re-send your prompt to retry on the fallback model. The chain is also walked at most `retry.maxRetries + 1` models per turn.
+**New config knobs** (in `config.json`):
+- `fallback.maxHops` — hard cap on automatic hops per unresolved failure (default: chain length − 1).
+- `fallback.retrigger` — set to `false` to revert to switch-only behavior without the auto-continuation turn.
+
+**Caveats:** each hop appends a short continuation message and the failed assistant reply is shrunk (not removed), so a small amount of context accumulates per hop until upstream pi exposes a replay API. Non-retryable errors (auth/content-policy/model-not-found) are best-effort detected and switch the model without hammering the chain.
 
 ### Presets
 

@@ -32,6 +32,13 @@ export interface PicopiConfig {
 	webSearch?: { provider?: string | null; searchModel?: string | null; summaryModel?: string | null };
 	/** Max concurrent subagent processes in parallel mode (default: 3). */
 	concurrency?: number;
+	/** Max automatic fallback hops per unresolved failure (default: chain length - 1). */
+	fallback?: {
+		/** Hard cap on automatic fallback hops regardless of chain length. Default: chain length - 1. */
+		maxHops?: number;
+		/** Master switch for self-driven re-triggering in tui/rpc (default: true). When false, switches model but does not auto-send a continuation turn. */
+		retrigger?: boolean;
+	};
 	/** Cleanup of stale session artifacts (undo backup refs, etc.). */
 	cleanup?: CleanupConfig;
 }
@@ -39,6 +46,17 @@ export interface PicopiConfig {
 export interface CleanupConfig {
 	/** Delete undo backup refs older than this many days (default: 30, 0 = never). */
 	checkpointMaxAgeDays?: number;
+}
+
+/**
+ * Effective hop cap for a given fallback chain length and config.
+ * Capped at chain.length - 1 so we never attempt more hops than there are
+ * models to try. The configured maxHops (if any) is an additional hard cap.
+ */
+export function hopCap(chainLen: number, cfg: PicopiConfig): number {
+	const natural = Math.max(0, chainLen - 1);
+	const configured = cfg.fallback?.maxHops;
+	return configured !== undefined ? Math.min(natural, configured) : natural;
 }
 
 /** The single config file path: <agentDir>/config.json (~/.config/picopi by

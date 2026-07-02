@@ -9,7 +9,7 @@
   },
   "retry": {
     "enabled": true,
-    "maxRetries": 3
+    "maxRetries": 2
   },
   "enableSkillCommands": true
 }
