@@ -46,10 +46,10 @@ async function generateCaption(ctx: any, userText: string, assistantText: string
 	// cheapest model in the orchestrator chain.
 	let modelSpecs: string[] = [];
 	if (titleModel) {
-		modelSpecs = await resolveModelChainForSpawn(cfg, titleModel);
+		modelSpecs = await resolveModelChainForSpawn(cfg, titleModel, ctx?.modelRegistry);
 	}
 	if (modelSpecs.length === 0 && cfg.orchestrator?.model) {
-		const orchChain = await resolveModelChainForSpawn(cfg, cfg.orchestrator.model);
+		const orchChain = await resolveModelChainForSpawn(cfg, cfg.orchestrator.model, ctx?.modelRegistry);
 		if (orchChain.length > 0) {
 			modelSpecs = [orchChain[orchChain.length - 1]]; // cheapest in chain
 		}

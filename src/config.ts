@@ -12,7 +12,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, getAgentDir, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -217,88 +217,44 @@ export async function resolveRoleModel(
 
 // ── Models.json resolution ────────────────────────────────────────────────────
 
-interface ModelsJson {
-	providers?: Record<string, {
-		apiKey?: string;
-		models?: { id: string }[];
-	}>;
-}
+// Lazily-constructed, cached fallback registry that honours both auth.json
+// (built-in providers set up via `/login`) and models.json inline apiKey
+// providers — identical to what the TUI uses via resolveRoleModel.
+let _fallbackRegistry: ModelRegistryLike | null = null;
 
-let modelsCache: { file: string; mtime: number; data: ModelsJson } | null = null;
-
-/** Load models.json from the agent dir (same location pi uses). */
-function loadModelsJson(): ModelsJson {
+function getFallbackRegistry(): ModelRegistryLike {
+	if (_fallbackRegistry) return _fallbackRegistry;
 	try {
 		const agentDir = getAgentDir();
-		const p = path.join(agentDir, "models.json");
-		const { mtimeMs } = fs.statSync(p);
-		if (modelsCache?.file === p && modelsCache.mtime === mtimeMs) return modelsCache.data;
-		const data = JSON.parse(fs.readFileSync(p, "utf-8")) as ModelsJson;
-		modelsCache = { file: p, mtime: mtimeMs, data };
-		return data;
+		const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
+		_fallbackRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
 	} catch {
-		return {};
+		_fallbackRegistry = {
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: false, error: "registry unavailable" }),
+		};
 	}
+	return _fallbackRegistry;
 }
 
 /**
- * Resolve the first model from an alias chain that exists in models.json and
- * has an API key configured.  Returns the `provider/modelId` spec or null.
- *
- * For spawned pi processes (pi does NOT support comma-separated fallback chains).
- */
-export function resolveModelForSpawn(cfg: PicopiConfig, alias: string, registry?: ModelRegistryLike): Promise<string | null> | string | null {
-	if (registry) {
-		return resolveModelChainForSpawn(cfg, alias, registry).then((chain) => chain.length > 0 ? chain[0] : null);
-	}
-	const chain = resolveModelChainForSpawnSync(cfg, alias);
-	return chain.length > 0 ? chain[0] : null;
-}
-
-/**
- * Resolve ALL models from an alias chain that exist in models.json and have
- * an API key configured.  Returns the full ordered list of `provider/modelId`
- * specs so callers can implement runtime retry-with-fallback.
- *
- * When a `registry` is provided, also checks built-in providers (google,
- * anthropic, openai) that are configured via /login but absent from models.json.
+ * Resolve ALL models from an alias chain that have working auth (checked via
+ * the model registry, which honours both auth.json built-in providers and
+ * models.json inline apiKey providers).  Returns the full ordered list of
+ * `provider/modelId` specs so callers can implement runtime retry-with-fallback.
  */
 export async function resolveModelChainForSpawn(cfg: PicopiConfig, alias: string, registry?: ModelRegistryLike): Promise<string[]> {
-	const sync = resolveModelChainForSpawnSync(cfg, alias);
-	if (!registry) return sync;
-	// Also check built-in registry providers (e.g. configured via /login)
-	// for any chain entries not already resolved via models.json.
-	const syncSet = new Set(sync);
-	const result: string[] = [...sync];
+	const reg = registry ?? getFallbackRegistry();
+	const result: string[] = [];
 	for (const spec of resolveChain(cfg, alias)) {
-		if (syncSet.has(spec)) continue;
 		const slash = spec.indexOf("/");
 		if (slash <= 0) continue;
-		const model = registry.find(spec.slice(0, slash), spec.slice(slash + 1));
+		const model = reg.find(spec.slice(0, slash), spec.slice(slash + 1));
 		if (!model) continue;
 		try {
-			const auth = await registry.getApiKeyAndHeaders(model);
+			const auth = await reg.getApiKeyAndHeaders(model);
 			if (auth.ok && (auth.apiKey || auth.headers)) result.push(spec);
 		} catch { /* try next */ }
-	}
-	return result;
-}
-
-/** Synchronous version: only checks models.json providers (requires apiKey). */
-function resolveModelChainForSpawnSync(cfg: PicopiConfig, alias: string): string[] {
-	const chain = resolveChain(cfg, alias);
-	const mj = loadModelsJson();
-	const result: string[] = [];
-	for (const spec of chain) {
-		const slash = spec.indexOf("/");
-		if (slash <= 0) continue;
-		const provider = spec.slice(0, slash);
-		const modelId = spec.slice(slash + 1);
-		const prov = mj.providers?.[provider];
-		if (!prov?.apiKey) continue;
-		const hasModel = prov.models?.some((m) => m.id === modelId) ?? false;
-		if (!hasModel) continue;
-		result.push(spec);
 	}
 	return result;
 }
