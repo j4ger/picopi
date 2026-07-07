@@ -230,15 +230,46 @@ Define alias overrides with `@preset` names so you can switch the whole fallback
 - The last-used preset is tracked **per workspace** and **persists across restarts and session resumes** (stored in `~/.config/picopi/state.json`, keyed by directory).
 - If an `@preset` variant is missing for an alias, the base alias is used as a fallback, so partial presets are safe.
 
-### Web search providers
+### Web search
 
-| Provider | Key | Notes |
-|----------|-----|-------|
-| DuckDuckGo | None | Default |
-| Exa | `EXA_API_KEY` | |
-| Perplexity | `PERPLEXITY_API_KEY` | |
-| Brave | `BRAVE_API_KEY` | |
-| `auto` | — | First keyed provider, else DuckDuckGo |
+Web search works **out of the box** via DuckDuckGo (no API key needed). For higher-quality results, configure one of the keyed providers (Exa, Perplexity, Brave) and picopi will use it automatically.
+
+#### Configuration
+
+Set the active provider under `webSearch.provider` in `~/.config/picopi/config.json`:
+
+```jsonc
+{
+  "webSearch": {
+    "provider": "auto",          // "auto" | "exa" | "perplexity" | "brave" | "duckduckgo"
+    "fallback": true,           // try other providers if the selected one fails (default true)
+    "searchModel": "sonar",      // Perplexity model (default "sonar", only used with Perplexity)
+    "apiKeys": {
+      "exa": "your-exa-key",
+      "perplexity": "your-perplexity-key",
+      "brave": "your-brave-key"
+    }
+  }
+}
+```
+
+- **`provider`** — `"auto"` (default) probes providers in order: **Exa → Perplexity → Brave**, checking for a configured key (from `apiKeys` or env var). The first provider with a key is used; if none have keys, DuckDuckGo is used as the fallback. Set explicitly to `"exa"`, `"perplexity"`, `"brave"`, or `"duckduckgo"` to pin a specific provider. Any explicitly selected provider is tried first and then automatically falls back to your other configured providers and finally DuckDuckGo, so a search never hard-fails just because one provider is down.
+- **`fallback`** — `true` (default) enables the automatic fallback described above; set to `false` to pin exactly one provider with no fallback (a provider outage or misconfiguration then surfaces as an error).
+- **`searchModel`** — controls the Perplexity model when Perplexity is the active provider. Defaults to `"sonar"`. Ignored for other providers.
+- **`apiKeys`** — per-provider API keys stored in the config file.
+
+#### Environment variables
+
+As an alternative to `apiKeys`, you can set API keys via environment variables. When **both** a config-file key and an env var are set for the same provider, **the environment variable wins**.
+
+| Provider | Config key (`apiKeys`) | Environment variable | Notes |
+|----------|------------------------|---------------------|-------|
+| DuckDuckGo | — | — | No key needed; default fallback |
+| Exa | `webSearch.apiKeys.exa` | `EXA_API_KEY` | |
+| Perplexity | `webSearch.apiKeys.perplexity` | `PERPLEXITY_API_KEY` | Use `searchModel` to select model |
+| Brave | `webSearch.apiKeys.brave` | `BRAVE_API_KEY` | |
+
+> **Note:** `~/.config/picopi/config.json` is seeded once by the installer and **never overwritten** on updates. If you installed picopi before the `apiKeys` block was added, you must add it manually to the existing file.
 
 ### Custom models / gateways
 

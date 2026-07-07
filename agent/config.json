@@ -25,9 +25,16 @@
   },
 
   "webSearch": {
+    "_comment": "Drives the built-in web_search tool. provider: auto|exa|perplexity|brave|duckduckgo. API keys can be set here under apiKeys OR via env (EXA_API_KEY/PERPLEXITY_API_KEY/BRAVE_API_KEY); env wins when both are set. DuckDuckGo needs no key and is the always-on fallback. searchModel = perplexity model (default sonar). fallback: when true (default) any selected provider is tried first, then falls back to the other configured providers and finally DuckDuckGo; set false to pin exactly one provider.",
     "provider": "auto",
+    "fallback": true,
     "searchModel": null,
-    "summaryModel": null
+    "summaryModel": null,
+    "apiKeys": {
+      "exa": null,
+      "perplexity": null,
+      "brave": null
+    }
   },
 
   "title-maker": {

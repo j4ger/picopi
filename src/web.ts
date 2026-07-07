@@ -366,6 +366,12 @@ function envKey(name: string): string | undefined {
 	return v && v.trim() ? v.trim() : undefined;
 }
 
+function resolveKey(envName: string, cfgKey: string | null | undefined): string | undefined {
+	const env = envKey(envName);
+	if (env) return env;
+	return typeof cfgKey === "string" && cfgKey.trim() ? cfgKey.trim() : undefined;
+}
+
 async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>, outer?: AbortSignal): Promise<T> {
 	const ctrl = new AbortController();
 	if (outer?.aborted) ctrl.abort();
@@ -614,15 +620,24 @@ async function searchDuckDuckGo(query: string, n: number, signal: AbortSignal): 
 async function runSearch(query: string, n: number, requested: string | undefined, signal: AbortSignal): Promise<SearchResult> {
 	const cfg = loadConfig();
 	const provider = (requested ?? cfg.webSearch?.provider ?? "auto").toLowerCase();
-	const exa = envKey("EXA_API_KEY");
-	const pplx = envKey("PERPLEXITY_API_KEY");
-	const brave = envKey("BRAVE_API_KEY");
+	const keys = cfg.webSearch?.apiKeys;
+	const exa = resolveKey("EXA_API_KEY", keys?.exa);
+	const pplx = resolveKey("PERPLEXITY_API_KEY", keys?.perplexity);
+	const brave = resolveKey("BRAVE_API_KEY", keys?.brave);
 	const pplxModel = typeof cfg.webSearch?.searchModel === "string" && cfg.webSearch.searchModel.trim() ? cfg.webSearch.searchModel.trim() : "sonar";
 
-	const tryOrder: string[] =
-		provider === "auto"
-			? [exa && "exa", pplx && "perplexity", brave && "brave", "duckduckgo"].filter(Boolean) as string[]
-			: [provider];
+	const fallbackEnabled = cfg.webSearch?.fallback !== false; // default true
+	// Full ordered chain of usable providers (keyed ones only if a key exists; DDG always).
+	const available = ([exa && "exa", pplx && "perplexity", brave && "brave", "duckduckgo"] as (string | false | undefined)[]).filter(Boolean) as string[];
+	let tryOrder: string[];
+	if (provider === "auto") {
+		tryOrder = available;
+	} else if (!fallbackEnabled) {
+		tryOrder = [provider];
+	} else {
+		// Explicit + fallback: requested provider first, then remaining available, deduped.
+		tryOrder = [provider, ...available.filter((p) => p !== provider)];
+	}
 
 	let lastErr: { provider: string; error: unknown } | null = null;
 	for (const p of tryOrder) {

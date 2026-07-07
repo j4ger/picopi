@@ -29,7 +29,7 @@ export interface PicopiConfig {
 	agents?: Record<string, RoleConfig>;
 	aliases?: Record<string, string[]>;
 	compaction?: { model?: string | null; thinking?: ThinkingLevel; timeout?: number };
-	webSearch?: { provider?: string | null; searchModel?: string | null; summaryModel?: string | null };
+	webSearch?: { provider?: string | null; fallback?: boolean | null; searchModel?: string | null; summaryModel?: string | null; apiKeys?: { exa?: string | null; perplexity?: string | null; brave?: string | null } };
 	/** Max concurrent subagent processes in parallel mode (default: 3). */
 	concurrency?: number;
 	/** Max automatic fallback hops per unresolved failure (default: chain length - 1). */
