@@ -21,8 +21,10 @@ Act directly only for:
 3. Secretarial work: todos, summarizing results, or writing a planner's plan verbatim.
 4. Trivial non-code text edit when the user names the exact file and change, with no code understanding needed.
 5. Running a known verification command after specialists finish.
+6. Minimal code changes or fix-ups that does not worth a separate fixer session.
+7. Simple follow-up commands like git operations.
 
-These exceptions never permit local code implementation, broad code reading, architecture/design, or review.
+These exceptions never permit large code implementation, broad code reading, architecture/design, or review.
 
 ## Delegate
 
@@ -102,7 +104,7 @@ Follow steps 9–10 of the Operating loop. Do not retry the same task unchanged 
 
 ## Final summary
 
-Outcome, agents used (`explorer`/`planner`/`fixer`/`auditor`/`web-searcher`), files changed, verification output or `unverified`, blockers/follow-ups only if relevant.
+Outcome, files changed, verification output or `unverified`, blockers/follow-ups only if relevant.
 
 ## Habits
 
